@@ -31,6 +31,7 @@ typedef int sock_t;
 
 #include "log.h"
 #include "dllist.h"
+#include "stream.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -67,6 +68,15 @@ typedef struct listen_t {
 	sock_t sock;
 } listen_t;
 
+typedef struct conn_t {
+	listen_t* listen;
+	sock_t sock;
+	int status;
+	stream_t ws; /* write stream */
+	stream_t rs; /* read stream */
+	dlitem_t entry;
+} conn_t;
+
 static char* listen_addr = NULL;
 static char* listen_port = NULL;
 static char* pid_file = NULL;
@@ -78,8 +88,9 @@ static char* config_file = NULL;
 static int running = 0;
 static int is_use_syslog = 0;
 static int is_use_logfile = 0;
-listen_t listens[MAX_LISTEN] = { 0 };
-int listen_num = 0;
+static listen_t listens[MAX_LISTEN] = { 0 };
+static int listen_num = 0;
+static dllist_t conns = DLLIST_INIT(conns);
 
 #ifdef WINDOWS
 
@@ -716,6 +727,50 @@ static int init_listens()
 	return 0;
 }
 
+static conn_t* new_conn(sock_t sock, listen_t* listen)
+{
+	conn_t* conn = (conn_t*)malloc(sizeof(conn_t));
+	if (!conn) {
+		loge("new_conn() error: alloc");
+		return NULL;
+	}
+
+	memset(conn, 0, sizeof(conn));
+
+	conn->sock = sock;
+	conn->listen = listen;
+
+	if (stream_init(&conn->ws)) {
+		loge("new_conn() error: stream_init() error.");
+		free(conn);
+		return NULL;
+	}
+
+	if (stream_init(&conn->rs)) {
+		loge("new_conn() error: stream_init() error.");
+		free(conn);
+		return NULL;
+	}
+
+	return conn;
+}
+
+static void free_conn(conn_t* conn)
+{
+	if (conn == NULL)
+		return;
+	if (conn->sock)
+		close(conn->sock);
+	stream_free(&conn->ws);
+	stream_free(&conn->rs);
+}
+
+static void destroy_conn(conn_t* conn)
+{
+	free_conn(conn);
+	free(conn);
+}
+
 static int init_proxy_server()
 {
 	if (log_file) {
@@ -759,6 +814,15 @@ static void uninit_proxy_server()
 			close(listen->sock);
 	}
 
+	{
+		dlitem_t* cur, * nxt;
+		conn_t* conn;
+
+		dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
+			destroy_conn(conn);
+		}
+	}
+
 	if (log_file) {
 		close_logfile();
 	}
@@ -775,22 +839,90 @@ static void uninit_proxy_server()
 	free(config_file);
 }
 
-static void handle_accept(listen_t* ctx)
+static int handle_accept(listen_t* ctx)
 {
 	sock_t sock;
 	sockaddr_t from = {
 		.addr = {0},
 		.addrlen = sizeof(struct sockaddr_storage),
 	};
+	conn_t* conn;
+
 	sock = accept(ctx->sock, (struct sockaddr*) & from.addr, &from.addrlen);
 	if (sock == -1) {
 		loge("accept() error: errno=%d, %s \n",
 			errno, strerror(errno));
-		return;
+		return -1;
 	}
-	logi("accept() from %s\n", get_sockaddrname(&from));
-	/*TODO:...*/
-	close(sock);
+	logd("accept() from %s\n", get_sockaddrname(&from));
+	conn = new_conn(sock, ctx);
+	if (!conn) {
+		close(sock);
+		return -1;
+	}
+	
+	dllist_add(&conns, &conn->entry);
+
+	return 0;
+}
+
+static int handle_write(conn_t* conn)
+{
+	stream_t* s = &conn->ws;
+	int rsize = stream_rsize(s);
+	int nsend;
+
+	nsend = send(conn->sock, s->array + s->pos, rsize, 0);
+	if (nsend == -1) {
+		int err = errno;
+		if (!is_eagain(err)) {
+			loge("handle_write() error: errno=%d, %s \n",
+				err, strerror(err));
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+		return 0;
+	}
+	else {
+		s->pos += nsend;
+		stream_shrink(s);
+		logd("send %d bytes\n", nsend);
+		return 0;
+	}
+}
+
+static int handle_recv(conn_t* conn)
+{
+	stream_t* s = &conn->rs;
+	int nread;
+	char buffer[4096];
+
+	nread = recv(conn->sock, buffer, sizeof(buffer), 0);
+	if (nread == -1) {
+		int err = errno;
+		if (!is_eagain(err)) {
+			loge("handle_recv() error: errno=%d, %s\n",
+				err, strerror(err));
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+		return 0;
+	}
+	else if (nread == 0) {
+		loge("handle_recv() error: connection closed by peer\n");
+		dllist_remove(&conn->entry);
+		destroy_conn(conn);
+		return -1;
+	}
+	else {
+		stream_write(s, buffer, nread);
+		stream_writei8(s, 0);
+		s->pos--;
+		logd("handle_recv(): %s\n", s->array);
+		return 0;
+	}
 }
 
 static int do_loop()
@@ -821,6 +953,20 @@ static int do_loop()
 			FD_SET(listen->sock, &errorset);
 		}
 
+		{
+			dlitem_t* cur, * nxt;
+			conn_t* conn;
+
+			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
+				max_fd = MAX(max_fd, conn->sock);
+				if (stream_rsize(&conn->ws) > 0)
+					FD_SET(conn->sock, &writeset);
+				else
+					FD_SET(conn->sock, &readset);
+				FD_SET(conn->sock, &errorset);
+			}
+		}
+
 		if (select(max_fd + 1, &readset, &writeset, &errorset, &timeout) == -1) {
 			loge("select() error: errno=%d, %s \n",
 				errno, strerror(errno));
@@ -831,12 +977,32 @@ static int do_loop()
 			listen_t* listen = listens + i;
 
 			if (FD_ISSET(listen->sock, &errorset)) {
-				loge("do_loop(): listen_sock error\n");
+				loge("do_loop(): listen.sock error\n");
 				return -1;
 			}
 
 			if (FD_ISSET(listen->sock, &readset)) {
 				handle_accept(listen);
+			}
+		}
+
+		{
+			dlitem_t* cur, * nxt;
+			conn_t* conn;
+
+			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
+				if (FD_ISSET(conn->sock, &errorset)) {
+					loge("do_loop(): conn.sock error\n");
+					return -1;
+				}
+
+				if (FD_ISSET(conn->sock, &writeset)) {
+					handle_write(conn);
+				}
+
+				if (FD_ISSET(conn->sock, &readset)) {
+					handle_recv(conn);
+				}
 			}
 		}
 	}
