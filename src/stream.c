@@ -44,6 +44,41 @@ int stream_seek(stream_t *stream, int offset, int whence)
 	return 0;
 }
 
+int stream_shrink(stream_t *stream)
+{
+	char *newarray;
+	int rsize = stream_rsize(stream);
+	if (rsize == 0)
+	{
+		free(stream->array);
+		memset(stream, 0, sizeof(stream_t));
+		return 0;
+	}
+	
+	if (rsize == stream->cap)
+		return 0;
+
+	if (stream->pos == 0) {
+		newarray = realloc(stream->array, rsize);
+		if (newarray == NULL)
+			return -1;
+		stream->array = newarray;
+		stream->cap = rsize;
+		return 0;
+	}
+
+	newarray = (char*)malloc(rsize);
+	if (newarray == NULL)
+		return -1;
+	memcpy(newarray, stream->array + stream->pos, rsize);
+	free(stream->array);
+	stream->array = newarray;
+	stream->cap = rsize;
+	stream->size = rsize;
+	stream->pos = 0;
+	return 0;
+}
+
 int stream_set_cap(stream_t *stream, int cap)
 {
 	char *newarray;

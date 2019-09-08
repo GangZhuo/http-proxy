@@ -31,11 +31,13 @@ void stream_free(stream_t *stream);
 
 int stream_seek(stream_t *stream, int offset, int whence);
 
+int stream_shrink(stream_t *stream);
+
+int stream_set_cap(stream_t *stream, int cap);
+
 int stream_read(stream_t *stream, char *dst, int n);
 
 int stream_write(stream_t *stream, const char *s, int n);
-
-int stream_set_cap(stream_t *stream, int cap);
 
 int stream_writei(stream_t *stream, int v, int nb);
 
