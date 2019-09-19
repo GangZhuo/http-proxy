@@ -32,6 +32,7 @@ typedef int sock_t;
 #include "log.h"
 #include "dllist.h"
 #include "stream.h"
+#include "../http-parser/http_parser.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -39,10 +40,15 @@ typedef int sock_t;
 #define DEFAULT_LISTEN_ADDR "0.0.0.0"
 #define DEFAULT_LISTEN_PORT "1080"
 #define DEFAULT_PID_FILE "/var/run/http-proxy.pid"
+#define DEFAULT_TIMEOUT 30
 #define LISTEN_BACKLOG	128
 #define MAX_LISTEN 8
+#define BUF_SIZE 4096
+#define MAX_HEADER_SIZE (1024 * 1024) /* 1MB */
 
 #define MAX(a, b) (((a) < (b)) ? (b) : (a))
+#define _XSTR(x) #x  
+#define XSTR(x) _XSTR(x)
 
 #ifndef EWOULDBLOCK
 #define EWOULDBLOCK EAGAIN
@@ -71,10 +77,13 @@ typedef struct listen_t {
 typedef struct conn_t {
 	listen_t* listen;
 	sock_t sock;
+	sock_t rsock; /* remote sock */
 	int status;
 	stream_t ws; /* write stream */
-	stream_t rs; /* read stream */
+	stream_t rws; /* remote write stream */
 	dlitem_t entry;
+	http_parser parser;
+	time_t expire;
 } conn_t;
 
 static char* listen_addr = NULL;
@@ -84,6 +93,7 @@ static char* log_file = NULL;
 static int daemonize = 0;
 static char* launch_log = NULL;
 static char* config_file = NULL;
+static int timeout = 0;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -102,6 +112,10 @@ static void ControlHandler(DWORD request);
 #define strdup(s) _strdup(s)
 
 #endif
+
+
+#define is_peer(conn) ((conn)->listen != NULL)
+#define is_server(conn) (!is_peer(conn))
 
 static char* ltrim(char* s)
 {
@@ -298,6 +312,33 @@ static char* get_sockaddrname(sockaddr_t* addr)
 	return get_addrname((struct sockaddr*)(&addr->addr));
 }
 
+static char* get_sockname(sock_t sock)
+{
+	static char buffer[INET6_ADDRSTRLEN + 16] = { 0 };
+	char sip[INET6_ADDRSTRLEN];
+	struct sockaddr_storage addr;
+	socklen_t len = sizeof(addr);
+	memset(&addr, 0, len);
+	int err = getpeername(sock, (struct sockaddr*) & addr, &len);
+	if (err != 0)
+		return NULL;
+	if (addr.ss_family == AF_INET) {
+		struct sockaddr_in* s = (struct sockaddr_in*) & addr;
+		inet_ntop(AF_INET, &s->sin_addr, sip, sizeof(sip));
+		snprintf(buffer, sizeof(buffer), "%s:%d", sip,
+			(int)(htons(s->sin_port) & 0xFFFF));
+		return buffer;
+	}
+	else if (addr.ss_family == AF_INET6) {
+		struct sockaddr_in6* s = (struct sockaddr_in6*) & addr;
+		inet_ntop(AF_INET6, &s->sin6_addr, sip, sizeof(sip));
+		snprintf(buffer, sizeof(buffer), "[%s]:%d", sip,
+			(int)(htons(s->sin6_port) & 0xFFFF));
+		return buffer;
+	}
+	return NULL;
+}
+
 static void usage()
 {
   printf("%s\n", "\n"
@@ -316,6 +357,7 @@ Options:\n\
                         Use comma to separate multi addresses, e.g. 127.0.0.1:5354,[::1]:5354.\n\
   -p BIND_PORT          Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
                         The port specified in \"-b\" is priority .\n\
+  -t TIMEOUT            Timeout seconds, default: " XSTR(DEFAULT_TIMEOUT) ".\n\
   --daemon              Daemonize.\n\
   --pid=PID_FILE_PATH   pid file, default: " DEFAULT_PID_FILE ", only available on daemonize.\n\
   --log=LOG_FILE_PATH   Write log to a file.\n\
@@ -342,7 +384,7 @@ static int parse_args(int argc, char** argv)
 		{0, 0, 0, 0}
 	};
 
-	while ((ch = getopt_long(argc, argv, "hb:p:vV", long_options, &option_index)) != -1) {
+	while ((ch = getopt_long(argc, argv, "hb:p:t:vV", long_options, &option_index)) != -1) {
 		switch (ch) {
 		case 1:
 			daemonize = 1;
@@ -371,6 +413,9 @@ static int parse_args(int argc, char** argv)
 		case 'p':
 			listen_port = strdup(optarg);
 			break;
+		case 't':
+			timeout = atoi(optarg);
+			break;
 		case 'v':
 			loglevel++;
 			break;
@@ -393,6 +438,9 @@ static int check_args()
 	}
 	if (listen_port == NULL) {
 		listen_port = strdup(DEFAULT_LISTEN_PORT);
+	}
+	if (timeout == 0) {
+		timeout = DEFAULT_TIMEOUT;
 	}
 	if (loglevel >= LOG_DEBUG) {
 		logflags = LOG_MASK_RAW;
@@ -508,6 +556,11 @@ static int read_config_file(const char* config_file, int force)
 			if (force || !listen_port) {
 				if (listen_port) free(listen_port);
 				listen_port = strdup(value);
+			}
+		}
+		else if (strcmp(name, "timeout") == 0 && strlen(value)) {
+			if (force || timeout == 0) {
+				timeout = atoi(value);
 			}
 		}
 		else if (strcmp(name, "pid_file") == 0 && strlen(value)) {
@@ -735,7 +788,7 @@ static conn_t* new_conn(sock_t sock, listen_t* listen)
 		return NULL;
 	}
 
-	memset(conn, 0, sizeof(conn));
+	memset(conn, 0, sizeof(conn_t));
 
 	conn->sock = sock;
 	conn->listen = listen;
@@ -746,11 +799,13 @@ static conn_t* new_conn(sock_t sock, listen_t* listen)
 		return NULL;
 	}
 
-	if (stream_init(&conn->rs)) {
+	if (stream_init(&conn->rws)) {
 		loge("new_conn() error: stream_init() error.");
 		free(conn);
 		return NULL;
 	}
+
+	http_parser_init(&conn->parser, is_peer(conn) ? HTTP_REQUEST : HTTP_RESPONSE);
 
 	return conn;
 }
@@ -759,16 +814,33 @@ static void free_conn(conn_t* conn)
 {
 	if (conn == NULL)
 		return;
-	if (conn->sock)
+	if (conn->sock) {
 		close(conn->sock);
+		conn->sock = 0;
+	}
+	if (conn->rsock) {
+		close(conn->rsock);
+		conn->rsock = 0;
+	}
 	stream_free(&conn->ws);
-	stream_free(&conn->rs);
+	stream_free(&conn->rws);
 }
 
 static void destroy_conn(conn_t* conn)
 {
 	free_conn(conn);
 	free(conn);
+}
+
+static inline void update_expire(conn_t* conn)
+{
+	time_t t = time(NULL);
+	conn->expire = t + timeout;
+}
+
+static inline int is_expired(conn_t* conn, time_t now)
+{
+	return conn->expire <= now;
 }
 
 static int init_proxy_server()
@@ -814,6 +886,8 @@ static void uninit_proxy_server()
 			close(listen->sock);
 	}
 
+	listen_num = 0;
+
 	{
 		dlitem_t* cur, * nxt;
 		conn_t* conn;
@@ -821,9 +895,11 @@ static void uninit_proxy_server()
 		dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
 			destroy_conn(conn);
 		}
+
+		dllist_init(&conns);
 	}
 
-	if (log_file) {
+	if (is_use_logfile) {
 		close_logfile();
 	}
 
@@ -863,6 +939,8 @@ static int handle_accept(listen_t* ctx)
 	
 	dllist_add(&conns, &conn->entry);
 
+	update_expire(conn);
+
 	return 0;
 }
 
@@ -888,15 +966,144 @@ static int handle_write(conn_t* conn)
 		s->pos += nsend;
 		stream_shrink(s);
 		logd("send %d bytes\n", nsend);
+		update_expire(conn);
 		return 0;
 	}
 }
 
+static int handle_rwrite(conn_t* conn)
+{
+	stream_t* s = &conn->rws;
+	int rsize = stream_rsize(s);
+	int nsend;
+
+	nsend = send(conn->rsock, s->array + s->pos, rsize, 0);
+	if (nsend == -1) {
+		int err = errno;
+		if (!is_eagain(err)) {
+			loge("handle_rwrite() error: errno=%d, %s \n",
+				err, strerror(err));
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+		return 0;
+	}
+	else {
+		s->pos += nsend;
+		stream_shrink(s);
+		logd("send %d bytes\n", nsend);
+		update_expire(conn);
+		return 0;
+	}
+}
+
+static int on_message_begin(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logi("on_message_begin(): method=%d\n", parser->method);
+	return 0;
+}
+
+static int on_url(http_parser* parser, const char* at, size_t length)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	char buf[BUF_SIZE];
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, at, length);
+	logi("on_url(): %s\n", buf);
+	return 0;
+}
+
+static int on_status(http_parser* parser, const char* at, size_t length)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	char buf[BUF_SIZE];
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, at, length);
+	logi("on_status(): %s\n", buf);
+	return 0;
+}
+
+static int on_header_field(http_parser* parser, const char* at, size_t length)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	char buf[BUF_SIZE];
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, at, length);
+	logi("on_header_field(): %s\n", buf);
+	return 0;
+}
+
+static int on_header_value(http_parser* parser, const char* at, size_t length)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	char buf[BUF_SIZE];
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, at, length);
+	logi("on_header_value(): %s\n", buf);
+	return 0;
+}
+
+static int on_headers_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	int keep_alive = http_should_keep_alive(parser);
+	logi("on_headers_complete(): keep_alive=%d\n", keep_alive);
+	logi("HTTP/%d.%d\n", parser->http_major, parser->http_minor);
+	return 0;
+}
+
+static int on_body(http_parser* parser, const char* at, size_t length)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	char buf[BUF_SIZE];
+	memset(buf, 0, sizeof(buf));
+	memcpy(buf, at, length);
+	logi("on_body(): %s\n", buf);
+	return 0;
+}
+
+static int on_message_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logi("on_message_complete()\n");
+	return 0;
+}
+
+/* When on_chunk_header is called, the current chunk length is stored
+ * in parser->content_length.
+ */
+static int on_chunk_header(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logi("on_chunk_header()\n");
+	return 0;
+}
+
+static int on_chunk_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logi("on_chunk_complete()\n");
+	return 0;
+}
+
 static int handle_recv(conn_t* conn)
 {
-	stream_t* s = &conn->rs;
 	int nread;
-	char buffer[4096];
+	char buffer[BUF_SIZE];
+	http_parser_settings req_settings = {
+		.on_message_begin = on_message_begin,
+		.on_url = on_url,
+		.on_status = on_status,
+		.on_header_field = on_header_field,
+		.on_header_value = on_header_value,
+		.on_headers_complete = on_headers_complete,
+		.on_body = on_body,
+		.on_message_complete = on_message_complete,
+		.on_chunk_header = on_chunk_header,
+		.on_chunk_complete = on_chunk_complete,
+	};
 
 	nread = recv(conn->sock, buffer, sizeof(buffer), 0);
 	if (nread == -1) {
@@ -917,10 +1124,80 @@ static int handle_recv(conn_t* conn)
 		return -1;
 	}
 	else {
-		stream_write(s, buffer, nread);
-		stream_writei8(s, 0);
-		s->pos--;
-		logd("handle_recv(): %s\n", s->array);
+		size_t nparsed;
+		//stream_write(s, buffer, nread);
+		//stream_writei8(s, 0);
+		//s->pos--;
+		logd("handle_recv(): %s\n", get_sockname(conn->sock));
+
+		nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
+
+		if (nparsed <= 0) {
+			loge("handle_recv() error: %s\n", http_errno_name(conn->parser.http_errno));
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+
+		update_expire(conn);
+
+		return 0;
+	}
+}
+
+static int handle_rrecv(conn_t* conn)
+{
+	int nread;
+	char buffer[BUF_SIZE];
+	http_parser_settings req_settings = {
+		.on_message_begin = on_message_begin,
+		.on_url = on_url,
+		.on_status = on_status,
+		.on_header_field = on_header_field,
+		.on_header_value = on_header_value,
+		.on_headers_complete = on_headers_complete,
+		.on_body = on_body,
+		.on_message_complete = on_message_complete,
+		.on_chunk_header = on_chunk_header,
+		.on_chunk_complete = on_chunk_complete,
+	};
+
+	nread = recv(conn->rsock, buffer, sizeof(buffer), 0);
+	if (nread == -1) {
+		int err = errno;
+		if (!is_eagain(err)) {
+			loge("handle_rrecv() error: errno=%d, %s\n",
+				err, strerror(err));
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+		return 0;
+	}
+	else if (nread == 0) {
+		loge("handle_rrecv() error: connection closed by peer\n");
+		dllist_remove(&conn->entry);
+		destroy_conn(conn);
+		return -1;
+	}
+	else {
+		size_t nparsed;
+		//stream_write(s, buffer, nread);
+		//stream_writei8(s, 0);
+		//s->pos--;
+		logd("handle_rrecv(): %s\n", get_sockname(conn->rsock));
+
+		nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
+
+		if (nparsed <= 0) {
+			loge("handle_rrecv() error: invalid HTTP message\n");
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
+
+		update_expire(conn);
+
 		return 0;
 	}
 }
@@ -929,7 +1206,8 @@ static int do_loop()
 {
 	fd_set readset, writeset, errorset;
 	sock_t max_fd;
-	int i;
+	int i, r;
+	time_t now;
 
 	running = 1;
 	while (running) {
@@ -964,6 +1242,15 @@ static int do_loop()
 				else
 					FD_SET(conn->sock, &readset);
 				FD_SET(conn->sock, &errorset);
+
+				if (conn->rsock > 0) {
+					max_fd = MAX(max_fd, conn->rsock);
+					if (stream_rsize(&conn->rws) > 0)
+						FD_SET(conn->rsock, &writeset);
+					else
+						FD_SET(conn->rsock, &readset);
+					FD_SET(conn->rsock, &errorset);
+				}
 			}
 		}
 
@@ -972,6 +1259,8 @@ static int do_loop()
 				errno, strerror(errno));
 			return -1;
 		}
+
+		now = time(NULL);
 
 		for (i = 0; i < listen_num; i++) {
 			listen_t* listen = listens + i;
@@ -982,7 +1271,7 @@ static int do_loop()
 			}
 
 			if (FD_ISSET(listen->sock, &readset)) {
-				handle_accept(listen);
+				r = handle_accept(listen);
 			}
 		}
 
@@ -991,18 +1280,44 @@ static int do_loop()
 			conn_t* conn;
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
+
 				if (FD_ISSET(conn->sock, &errorset)) {
-					loge("do_loop(): conn.sock error\n");
-					return -1;
+					loge("do_loop(): conn.sock error: errno=%d, %s \n",
+						errno, strerror(errno));
+					dllist_remove(&conn->entry);
+					destroy_conn(conn);
+					continue;
+				}
+				else if (FD_ISSET(conn->sock, &writeset)) {
+					r = handle_write(conn);
+				}
+				else if (FD_ISSET(conn->sock, &readset)) {
+					r = handle_recv(conn);
 				}
 
-				if (FD_ISSET(conn->sock, &writeset)) {
-					handle_write(conn);
+				if (!r && conn->rsock > 0) {
+					if (FD_ISSET(conn->rsock, &errorset)) {
+						loge("do_loop(): conn.rsock error: errno=%d, %s \n",
+							errno, strerror(errno));
+						dllist_remove(&conn->entry);
+						destroy_conn(conn);
+						continue;
+					}
+					else if (FD_ISSET(conn->rsock, &writeset)) {
+						r = handle_rwrite(conn);
+					}
+					else if (FD_ISSET(conn->rsock, &readset)) {
+						r = handle_rrecv(conn);
+					}
 				}
 
-				if (FD_ISSET(conn->sock, &readset)) {
-					handle_recv(conn);
+				if (!r && is_expired(conn, now)) {
+					loge("timeout - %s\n", get_sockname(conn->sock));
+					dllist_remove(&conn->entry);
+					destroy_conn(conn);
+					continue;
 				}
+
 			}
 		}
 	}
