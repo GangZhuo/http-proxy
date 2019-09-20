@@ -79,6 +79,18 @@ int stream_shrink(stream_t *stream)
 	return 0;
 }
 
+int stream_quake(stream_t* stream)
+{
+	if (stream->pos > 0) {
+		int size = stream_rsize(stream);
+		memmove(stream->array, stream->array + stream->pos, size);
+		stream->size = size;
+		stream->pos = 0;
+	}
+
+	return 0;
+}
+
 int stream_set_cap(stream_t *stream, int cap)
 {
 	char *newarray;
@@ -103,6 +115,31 @@ int stream_write(stream_t *stream, const char *s, int n)
 	memcpy(stream->array + stream->pos, s, n);
 	stream->pos += n;
 	stream->size += n;
+	return n;
+}
+
+int stream_append(stream_t* stream, const char* s, int n)
+{
+	int pos = stream->pos;
+	int nwrite;
+
+	stream->pos = stream->size;
+	nwrite = stream_write(stream, s, n);
+	stream->pos = pos;
+
+	return nwrite;
+}
+
+int stream_writes(stream_t* stream, const char* s, int n)
+{
+	if (stream_rcap(stream) < (n+1)) {
+		if (stream_set_cap(stream, stream->pos + align(n+1)))
+			return -1;
+	}
+	memcpy(stream->array + stream->pos, s, n);
+	stream->pos += n;
+	stream->size += n;
+	stream->array[stream->pos] = '\0';
 	return n;
 }
 
@@ -200,6 +237,52 @@ int stream_writef(stream_t *stream, const char *fmt, ...)
 	va_list args;
 	va_start(args, fmt);
 	r = stream_vwritef(stream, fmt, args);
+	va_end(args);
+	return r;
+}
+
+int stream_vappendf(stream_t* stream, const char* fmt, va_list args)
+{
+	int cnt, sz;
+	char* buf;
+	va_list ap_try;
+
+	sz = 128;
+	buf = (char*)alloca(sz);
+	if (!buf) return -1;
+try_print:
+	va_copy(ap_try, args);
+	cnt = vsnprintf(buf, sz, fmt, ap_try);
+	va_end(ap_try);
+	if (cnt >= sz) {
+		sz *= 2;
+		buf = (char*)alloca(sz);
+		if (!buf) return -1;
+		goto try_print;
+	}
+	if (cnt < 0)
+		return -1;
+
+	if (stream_rcap(stream) < (cnt + 1)) {
+		if (stream_set_cap(stream, stream->pos + align(cnt + 1)))
+			return -1;
+	}
+
+	if (stream_append(stream, buf, cnt) != cnt) {
+		return -1;
+	}
+
+	stream->array[stream->size] = '\0';
+
+	return cnt;
+}
+
+int stream_appendf(stream_t* stream, const char* fmt, ...)
+{
+	int r;
+	va_list args;
+	va_start(args, fmt);
+	r = stream_vappendf(stream, fmt, args);
 	va_end(args);
 	return r;
 }

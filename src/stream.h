@@ -33,9 +33,17 @@ int stream_seek(stream_t *stream, int offset, int whence);
 
 int stream_shrink(stream_t *stream);
 
+int stream_quake(stream_t* stream);
+
 int stream_set_cap(stream_t *stream, int cap);
 
 int stream_read(stream_t *stream, char *dst, int n);
+
+int stream_append(stream_t* stream, const char* s, int n);
+
+int stream_vappendf(stream_t* stream, const char* fmt, va_list args);
+
+int stream_appendf(stream_t* stream, const char* fmt, ...);
 
 int stream_write(stream_t *stream, const char *s, int n);
 
@@ -44,6 +52,8 @@ int stream_writei(stream_t *stream, int v, int nb);
 int stream_vwritef(stream_t *stream, const char *fmt, va_list args);
 
 int stream_writef(stream_t *stream, const char *fmt, ...);
+
+int stream_writes(stream_t* stream, const char* s, int n);
 
 int stream_writess(stream_t *dst, stream_t *src, int n);
 
