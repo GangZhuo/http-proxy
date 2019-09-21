@@ -94,6 +94,13 @@ int stream_quake(stream_t* stream)
 int stream_set_cap(stream_t *stream, int cap)
 {
 	char *newarray;
+
+	if (stream->cap == cap)
+		return 0;
+
+	if (stream->cap > cap && stream->cap <= (cap + cap * 4 / 10))
+		return 0;
+
 	newarray = realloc(stream->array, cap);
 	if (newarray == NULL)
 		return -1;

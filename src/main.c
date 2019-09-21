@@ -88,11 +88,25 @@ typedef enum field_status {
 	fs_value,
 } field_status;
 
+typedef enum conn_status {
+	cs_none = 0,
+	cs_connecting,
+	cs_connected,
+} conn_status;
+
+typedef enum proxy_mode {
+	pm_none = 0,
+	pm_proxy,
+	pm_tunnel,
+} proxy_mode;
+
 typedef struct conn_t {
 	listen_t* listen;
 	sock_t sock;
 	sock_t rsock; /* remote sock */
-	int status;
+	sockaddr_t raddr; /* remote address */
+	proxy_mode mode;
+	conn_status status;
 	stream_t ws; /* write stream */
 	stream_t rws; /* remote write stream */
 	dlitem_t entry;
@@ -100,11 +114,11 @@ typedef struct conn_t {
 	time_t expire;
 	size_t header_size;
 	stream_t url;
+	int is_first_line;
 	struct {
 		stream_t name;
 		stream_t value;
 		field_status status;
-		int is_first;
 	} field;
 } conn_t;
 
@@ -651,14 +665,36 @@ static int parse_addrstr(char* s, char** host, char** port)
 	return 0;
 }
 
+static int host2addr(sockaddr_t* addr, const char *host, const char *port)
+{
+	struct addrinfo hints;
+	struct addrinfo* addrinfo;
+	int r;
+
+	memset(&hints, 0, sizeof(hints));
+
+	hints.ai_family = AF_UNSPEC;/* is_ipv6(host) ? AF_INET6 : AF_INET;*/
+	hints.ai_socktype = SOCK_STREAM;
+
+	if ((r = getaddrinfo(host, port, &hints, &addrinfo)) != 0) {
+		loge("host2addr() error: %s %s:%s\n", gai_strerror(r), host, port);
+		return -1;
+	}
+
+	memcpy(&addr->addr, addrinfo->ai_addr, addrinfo->ai_addrlen);
+	addr->addrlen = (int)addrinfo->ai_addrlen;
+
+	freeaddrinfo(addrinfo);
+
+	return 0;
+
+}
+
 static int str2addr(
 	char* s, sockaddr_t* addr,
 	const char* default_port)
 {
 	char* host, * port;
-	struct addrinfo hints;
-	struct addrinfo* addrinfo;
-	int r;
 
 	if (parse_addrstr(s, &host, &port))
 		return -1;
@@ -669,22 +705,7 @@ static int str2addr(
 	if (!port || strlen(port) == 0)
 		port = DEFAULT_LISTEN_PORT;
 
-	memset(&hints, 0, sizeof(hints));
-
-	hints.ai_family = is_ipv6(host) ? AF_INET6 : AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-
-	if ((r = getaddrinfo(host, port, &hints, &addrinfo)) != 0) {
-		loge("str2addr() error: %s %s:%s\n", gai_strerror(r), port, port);
-		return -1;
-	}
-
-	memcpy(&addr->addr, addrinfo->ai_addr, addrinfo->ai_addrlen);
-	addr->addrlen = addrinfo->ai_addrlen;
-
-	freeaddrinfo(addrinfo);
-
-	return 0;
+	return host2addr(addr, host, port);
 }
 
 static int resolve_addrstr(
@@ -928,6 +949,29 @@ static void uninit_proxy_server()
 	free(config_file);
 }
 
+static int on_remote_connected(conn_t* conn)
+{
+	http_parser* parser = &conn->parser;
+
+	logd("connected %s %s\n",
+		get_sockaddrname(&conn->raddr),
+		conn->url.array);
+
+	if (conn->mode == pm_tunnel) {
+		if (stream_appendf(&conn->ws, "HTTP/%d.%d 200 Connection Established\r\n\r\n",
+			parser->http_major,
+			parser->http_minor) == -1) {
+			loge("on_remote_connected() error: stream_appendf()");
+			return -1;
+		}
+	}
+
+	logd("\nws:\n%s\n", conn->ws.array);
+	logd("\nrws:\n%s\n", conn->rws.array);
+
+	return 0;
+}
+
 static int handle_accept(listen_t* ctx)
 {
 	sock_t sock;
@@ -963,6 +1007,9 @@ static int handle_write(conn_t* conn)
 	int rsize = stream_rsize(s);
 	int nsend;
 
+	if (rsize == 0)
+		return 0;
+
 	nsend = send(conn->sock, s->array + s->pos, rsize, 0);
 	if (nsend == -1) {
 		int err = errno;
@@ -977,9 +1024,14 @@ static int handle_write(conn_t* conn)
 	}
 	else {
 		s->pos += nsend;
-		stream_quake(s);
-		logd("send %d bytes\n", nsend);
+		logd("handle_write(): send %d bytes\n", nsend);
 		update_expire(conn);
+		if (stream_quake(s)) {
+			loge("handle_write() error: stream_quake()\n");
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
 		return 0;
 	}
 }
@@ -989,6 +1041,9 @@ static int handle_rwrite(conn_t* conn)
 	stream_t* s = &conn->rws;
 	int rsize = stream_rsize(s);
 	int nsend;
+
+	if (rsize == 0)
+		return 0;
 
 	nsend = send(conn->rsock, s->array + s->pos, rsize, 0);
 	if (nsend == -1) {
@@ -1004,9 +1059,14 @@ static int handle_rwrite(conn_t* conn)
 	}
 	else {
 		s->pos += nsend;
-		stream_shrink(s);
-		logd("send %d bytes\n", nsend);
+		logd("handle_rwrite(): send %d bytes\n", nsend);
 		update_expire(conn);
+		if (stream_quake(s)) {
+			loge("handle_write() error: stream_quake()\n");
+			dllist_remove(&conn->entry);
+			destroy_conn(conn);
+			return -1;
+		}
 		return 0;
 	}
 }
@@ -1022,13 +1082,13 @@ static int check_head_size(conn_t *conn, size_t addend)
 static int on_message_begin(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	logd("on_message_begin(): method=%d\n", parser->method);
+	logd("METHOD: %s\n", http_method_str(parser->method));
 	conn->header_size = 0;
 	stream_reset(&conn->url);
 	stream_reset(&conn->field.name);
 	stream_reset(&conn->field.value);
 	conn->field.status = fs_none;
-	conn->field.is_first = TRUE;
+	conn->is_first_line = TRUE;
 	return 0;
 }
 
@@ -1039,42 +1099,71 @@ static int on_url(http_parser* parser, const char* at, size_t length)
 	if (check_head_size(conn, length))
 		return -1;
 
-	stream_writes(&conn->url, at, length);
+	if (stream_writes(&conn->url, at, (int)length) == -1) {
+		loge("on_url() error: stream_writes()\n");
+		return -1;
+	}
 
-	logd("on_url(): %s\n", conn->url.array);
+	logd("URL: %s\n", conn->url.array);
 
 	return 0;
+}
+
+static int on_first_line_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	if (parser->method != HTTP_CONNECT) {
+		int r;
+		r = stream_appendf(&conn->rws, "%s %s HTTP/%d.%d\r\n",
+			http_method_str(parser->method),
+			conn->url.array,
+			parser->http_major,
+			parser->http_minor);
+		if (r == -1) {
+			loge("on_first_line_complete() error: stream_appendf()\n");
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int detect_first_line_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	if (conn->is_first_line) {
+		conn->is_first_line = FALSE;
+		on_first_line_complete(parser);
+		return TRUE;
+	}
+	return FALSE;
 }
 
 static int on_field_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
 
+	detect_first_line_complete(parser);
+
 	logd("%s: %s\n",
 		conn->field.name.array,
 		conn->field.value.array);
 
 	if (parser->method != HTTP_CONNECT) {
-		if (conn->field.is_first) {
-			stream_appendf(&conn->rws, "%s %s HTTP/%d.%d\r\n",
-				http_method_str(parser->method),
-				conn->url.array,
-				parser->http_major,
-				parser->http_minor);
-		}
+		int r;
 		if (strnicmp(conn->field.name.array, "Proxy-Connection", sizeof("Proxy-Connection")) == 0) {
-			stream_appendf(&conn->rws, "Connection: %s\r\n",
+			r = stream_appendf(&conn->rws, "Connection: %s\r\n",
 				conn->field.value.array);
 		}
 		else {
-			stream_appendf(&conn->rws, "%s: %s\r\n",
+			r = stream_appendf(&conn->rws, "%s: %s\r\n",
 				conn->field.name.array,
 				conn->field.value.array);
 		}
+		if (r == -1) {
+			loge("on_field_complete() error: stream_appendf()\n");
+			return -1;
+		}
 	}
-
-	if (conn->field.is_first)
-		conn->field.is_first = FALSE;
 
 	stream_reset(&conn->field.name);
 	stream_reset(&conn->field.value);
@@ -1097,7 +1186,10 @@ static int on_header_field(http_parser* parser, const char* at, size_t length)
 
 	conn->field.status = fs_name;
 
-	stream_writes(&conn->field.name, at, length);
+	if (stream_writes(&conn->field.name, at, (int)length) == -1) {
+		loge("on_header_field() error: stream_writes()\n");
+		return -1;
+	}
 
 	return 0;
 }
@@ -1111,7 +1203,179 @@ static int on_header_value(http_parser* parser, const char* at, size_t length)
 
 	conn->field.status = fs_value;
 	
-	stream_writes(&conn->field.value, at, length);
+	if (stream_writes(&conn->field.value, at, (int)length) == -1) {
+		loge("on_header_value() error: stream_writes()\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_host(char** host, const char* url, struct http_parser_url* u)
+{
+	if (u->field_set & (1 << UF_HOST)) {
+		*host = (char*)malloc((size_t)u->field_data[UF_HOST].len + 1);
+		if (!(*host)) {
+			loge("get_host_and_port() error: alloc");
+			return -1;
+		}
+		memcpy(*host, url + u->field_data[UF_HOST].off, u->field_data[UF_HOST].len);
+		(*host)[u->field_data[UF_HOST].len] = '\0';
+	}
+	else {
+		loge("get_host() error: no \"host\"");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_port_by_schema(char** port, const char* url, struct http_parser_url* u)
+{
+	if (u->field_set & (1 << UF_SCHEMA)) {
+		const char* schema = url + u->field_data[UF_SCHEMA].off;
+		size_t schemalen = u->field_data[UF_SCHEMA].len;
+
+		if (schemalen == sizeof("https") - 1 &&
+			strnicmp(schema, "https", sizeof("https") - 1) == 0) {
+			*port = strdup("443");
+		}
+		else if (schemalen == sizeof("http") - 1 &&
+			strnicmp(schema, "http", sizeof("http") - 1) == 0) {
+			*port = strdup("80");
+		}
+		else {
+			loge("get_port_by_schema() error: no \"schema\"");
+			return -1;
+		}
+	}
+	else {
+		loge("get_port_by_schema() error: no \"schema\"");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_port(char** port, const char* url, struct http_parser_url* u)
+{
+	if (u->field_set & (1 << UF_PORT)) {
+		*port = (char*)malloc((size_t)u->field_data[UF_PORT].len + 1);
+		if (!(*port)) {
+			loge("get_host_and_port() error: alloc");
+			return -1;
+		}
+		memcpy(*port, url + u->field_data[UF_PORT].off, u->field_data[UF_PORT].len);
+		(*port)[u->field_data[UF_PORT].len] = '\0';
+	}
+	else if (get_port_by_schema(port, url, u)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_host_and_port(char** host, char** port, const char *url, size_t urllen)
+{
+	struct http_parser_url u;
+
+	http_parser_url_init(&u);
+
+	if (http_parser_parse_url(url, urllen, 0, &u)) {
+		loge("get_host_and_port() error: parse \"%s\" failed\n", url);
+		return -1;
+	}
+
+	if (get_host(host, url, &u)) {
+		return -1;
+	}
+
+	if (get_port(port, url, &u)) {
+		free(*host);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_remote_addr(sockaddr_t *addr, const conn_t* conn)
+{
+	if (conn->mode == pm_tunnel) {
+		char* s = strdup(conn->url.array);
+		if (str2addr(s, addr, "80")) {
+			free(s);
+			loge("get_remote_addr() error: resolve \"%s\" failed\n", conn->url.array);
+			return -1;
+		}
+		free(s);
+	}
+	else {
+		char* host, * port;
+		if (get_host_and_port(&host, &port, conn->url.array, conn->url.size)) {
+			loge("get_remote_addr() error: parse \"%s\" failed\n", conn->url.array);
+			return -1;
+		}
+		if (host2addr(addr, host, port)) {
+			loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
+			free(host);
+			free(port);
+			return -1;
+		}
+		free(host);
+		free(port);
+	}
+	return 0;
+}
+
+static int connect_remote(conn_t* conn)
+{
+	sock_t sock;
+	sockaddr_t *addr = &conn->raddr;
+
+	if (get_remote_addr(addr, conn)) {
+		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
+		return -1;
+	}
+	
+	logd("connecting %s %s\n",
+		get_sockaddrname(&conn->raddr),
+		conn->url.array);
+
+	sock = socket(addr->addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+
+	if (!sock) {
+		loge("connect_remote() error: create socket error. errno=%d, %s - %s\n",
+			errno, strerror(errno), get_sockaddrname(addr));
+		return -1;
+	}
+
+	if (setnonblock(sock) != 0) {
+		loge("connect_remote() error: set sock non-block failed - %s\n",
+			get_sockaddrname(addr));
+		close(sock);
+		return -1;
+	}
+
+	if (connect(sock, (struct sockaddr*)(&addr->addr), addr->addrlen) != 0) {
+		int err = errno;
+		if (is_eagain(err)) {
+			conn->rsock = sock;
+			conn->status = cs_connecting;
+		}
+		else {
+			loge("connect_remote() error: errno=%d, %s - %s\n",
+				errno, strerror(errno), get_sockaddrname(addr));
+			close(sock);
+			return -1;
+		}
+	}
+	else {
+		conn->rsock = sock;
+		conn->status = cs_connected;
+		if (on_remote_connected(conn)) {
+			return -1;
+		}
+	}
 
 	return 0;
 }
@@ -1119,18 +1383,32 @@ static int on_header_value(http_parser* parser, const char* at, size_t length)
 static int on_headers_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	int keep_alive = http_should_keep_alive(parser);
+
+	logd("on_headers_complete(): keep_alive=%d\n", http_should_keep_alive(parser));
 
 	if (conn->field.status != fs_none) {
 		if (on_field_complete(parser))
 			return -1;
 	}
+	else {
+		detect_first_line_complete(parser);
+	}
 
-	stream_appendf(&conn->rws, "\r\n");
+	if (parser->method != HTTP_CONNECT) {
+		if (stream_appendf(&conn->rws, "\r\n") == -1) {
+			loge("on_headers_complete() error: stream_appendf()\n");
+			return -1;
+		}
+		conn->mode = pm_proxy;
+	}
+	else {
+		conn->mode = pm_tunnel;
+	}
 
-	logd("on_headers_complete(): keep_alive=%d\n", keep_alive);
-	logd("HTTP/%d.%d\n", parser->http_major, parser->http_minor);
-	logd("%s\n", conn->rws.array);
+	if (!conn->rsock) {
+		if (connect_remote(conn))
+			return -1;
+	}
 
 	return 0;
 }
@@ -1138,34 +1416,16 @@ static int on_headers_complete(http_parser* parser)
 static int on_body(http_parser* parser, const char* at, size_t length)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	char buf[BUF_SIZE];
-	memset(buf, 0, sizeof(buf));
-	memcpy(buf, at, length);
-	logd("on_body(): %s\n", buf);
+	if (stream_append(&conn->rws, at, (int)length) == -1) {
+		loge("on_body() error: stream_append()\n");
+		return -1;
+	}
 	return 0;
 }
 
 static int on_message_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	logd("on_message_complete()\n");
-	return 0;
-}
-
-/* When on_chunk_header is called, the current chunk length is stored
- * in parser->content_length.
- */
-static int on_chunk_header(http_parser* parser)
-{
-	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	logi("on_chunk_header()\n");
-	return 0;
-}
-
-static int on_chunk_complete(http_parser* parser)
-{
-	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	logi("on_chunk_complete()\n");
 	return 0;
 }
 
@@ -1182,8 +1442,8 @@ static int handle_recv(conn_t* conn)
 		.on_headers_complete = on_headers_complete,
 		.on_body = on_body,
 		.on_message_complete = on_message_complete,
-		.on_chunk_header = on_chunk_header,
-		.on_chunk_complete = on_chunk_complete,
+		.on_chunk_header = NULL,
+		.on_chunk_complete = NULL,
 	};
 
 	nread = recv(conn->sock, buffer, sizeof(buffer), 0);
@@ -1206,20 +1466,28 @@ static int handle_recv(conn_t* conn)
 	}
 	else {
 		size_t nparsed;
-		//stream_write(s, buffer, nread);
-		//stream_writei8(s, 0);
-		//s->pos--;
-		logd("handle_recv(): recv %d bytes - %s\n",
+
+		logd("handle_recv(): recv %d bytes from %s\n",
 			nread,
 			get_sockname(conn->sock));
 
-		nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
+		if (conn->mode == pm_tunnel) {
+			if (stream_append(&conn->rws, buffer, nread) == -1) {
+				loge("handle_recv() error: stream_append()\n");
+				dllist_remove(&conn->entry);
+				destroy_conn(conn);
+				return -1;
+			}
+		}
+		else {
+			nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
 
-		if (nparsed <= 0) {
-			loge("handle_recv() error: %s\n", http_errno_name(conn->parser.http_errno));
-			dllist_remove(&conn->entry);
-			destroy_conn(conn);
-			return -1;
+			if (nparsed <= 0) {
+				loge("handle_recv() error: %s\n", http_errno_name(conn->parser.http_errno));
+				dllist_remove(&conn->entry);
+				destroy_conn(conn);
+				return -1;
+			}
 		}
 
 		update_expire(conn);
@@ -1232,18 +1500,6 @@ static int handle_rrecv(conn_t* conn)
 {
 	int nread;
 	char buffer[BUF_SIZE];
-	http_parser_settings req_settings = {
-		.on_message_begin = on_message_begin,
-		.on_url = on_url,
-		.on_status = NULL,
-		.on_header_field = on_header_field,
-		.on_header_value = on_header_value,
-		.on_headers_complete = on_headers_complete,
-		.on_body = on_body,
-		.on_message_complete = on_message_complete,
-		.on_chunk_header = on_chunk_header,
-		.on_chunk_complete = on_chunk_complete,
-	};
 
 	nread = recv(conn->rsock, buffer, sizeof(buffer), 0);
 	if (nread == -1) {
@@ -1264,18 +1520,14 @@ static int handle_rrecv(conn_t* conn)
 		return -1;
 	}
 	else {
-		size_t nparsed;
-		//stream_write(s, buffer, nread);
-		//stream_writei8(s, 0);
-		//s->pos--;
-		logd("handle_rrecv(): recv %d bytes - %s\n",
+
+		logd("handle_rrecv(): recv %d bytes from %s %s\n",
 			nread,
-			get_sockname(conn->sock));
+			get_sockaddrname(&conn->raddr),
+			conn->url.array);
 
-		nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
-
-		if (nparsed <= 0) {
-			loge("handle_rrecv() error: invalid HTTP message\n");
+		if (stream_append(&conn->ws, buffer, nread) == -1) {
+			loge("handle_rrecv() error: stream_append()\n");
 			dllist_remove(&conn->entry);
 			destroy_conn(conn);
 			return -1;
@@ -1330,7 +1582,7 @@ static int do_loop()
 
 				if (conn->rsock > 0) {
 					max_fd = MAX(max_fd, conn->rsock);
-					if (stream_rsize(&conn->rws) > 0)
+					if (conn->status == cs_connecting || stream_rsize(&conn->rws) > 0)
 						FD_SET(conn->rsock, &writeset);
 					else
 						FD_SET(conn->rsock, &readset);
@@ -1379,6 +1631,9 @@ static int do_loop()
 				else if (FD_ISSET(conn->sock, &readset)) {
 					r = handle_recv(conn);
 				}
+				else {
+					r = 0;
+				}
 
 				if (!r && conn->rsock > 0) {
 					if (FD_ISSET(conn->rsock, &errorset)) {
@@ -1389,7 +1644,12 @@ static int do_loop()
 						continue;
 					}
 					else if (FD_ISSET(conn->rsock, &writeset)) {
-						r = handle_rwrite(conn);
+						if (conn->status == cs_connecting) {
+							conn->status = cs_connected;
+							r = on_remote_connected(conn);
+						}
+						if (!r)
+							r = handle_rwrite(conn);
 					}
 					else if (FD_ISSET(conn->rsock, &readset)) {
 						r = handle_rrecv(conn);
