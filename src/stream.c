@@ -263,8 +263,8 @@ try_print:
 	if (cnt < 0)
 		return -1;
 
-	if (stream_rcap(stream) < (cnt + 1)) {
-		if (stream_set_cap(stream, stream->pos + align(cnt + 1)))
+	if ((stream->cap - stream->size) < (cnt + 1)) {
+		if (stream_set_cap(stream, stream->size + align(cnt + 1)))
 			return -1;
 	}
 
