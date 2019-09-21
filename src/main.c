@@ -150,9 +150,6 @@ static void ControlHandler(DWORD request);
 #endif
 
 
-#define is_peer(conn) ((conn)->listen != NULL)
-#define is_server(conn) (!is_peer(conn))
-
 static char* ltrim(char* s)
 {
 	char* p = s;
@@ -836,7 +833,7 @@ static conn_t* new_conn(sock_t sock, listen_t* listen)
 	conn->sock = sock;
 	conn->listen = listen;
 
-	http_parser_init(&conn->parser, is_peer(conn) ? HTTP_REQUEST : HTTP_RESPONSE);
+	http_parser_init(&conn->parser, HTTP_REQUEST);
 
 	return conn;
 }
@@ -1416,8 +1413,8 @@ static int on_headers_complete(http_parser* parser)
 static int on_body(http_parser* parser, const char* at, size_t length)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	if (stream_append(&conn->rws, at, (int)length) == -1) {
-		loge("on_body() error: stream_append()\n");
+	if (stream_appends(&conn->rws, at, (int)length) == -1) {
+		loge("on_body() error: stream_appends()\n");
 		return -1;
 	}
 	return 0;
@@ -1472,8 +1469,8 @@ static int handle_recv(conn_t* conn)
 			get_sockname(conn->sock));
 
 		if (conn->mode == pm_tunnel) {
-			if (stream_append(&conn->rws, buffer, nread) == -1) {
-				loge("handle_recv() error: stream_append()\n");
+			if (stream_appends(&conn->rws, buffer, nread) == -1) {
+				loge("handle_recv() error: stream_appends()\n");
 				dllist_remove(&conn->entry);
 				destroy_conn(conn);
 				return -1;
@@ -1526,8 +1523,8 @@ static int handle_rrecv(conn_t* conn)
 			get_sockaddrname(&conn->raddr),
 			conn->url.array);
 
-		if (stream_append(&conn->ws, buffer, nread) == -1) {
-			loge("handle_rrecv() error: stream_append()\n");
+		if (stream_appends(&conn->ws, buffer, nread) == -1) {
+			loge("handle_rrecv() error: stream_appends()\n");
 			dllist_remove(&conn->entry);
 			destroy_conn(conn);
 			return -1;

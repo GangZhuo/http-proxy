@@ -39,12 +39,6 @@ int stream_set_cap(stream_t *stream, int cap);
 
 int stream_read(stream_t *stream, char *dst, int n);
 
-int stream_append(stream_t* stream, const char* s, int n);
-
-int stream_vappendf(stream_t* stream, const char* fmt, va_list args);
-
-int stream_appendf(stream_t* stream, const char* fmt, ...);
-
 int stream_write(stream_t *stream, const char *s, int n);
 
 int stream_writei(stream_t *stream, int v, int nb);
@@ -60,6 +54,14 @@ int stream_writess(stream_t *dst, stream_t *src, int n);
 int stream_readi(stream_t *stream, int nb);
 
 int stream_seti(stream_t *stream, int position, int v, int nb);
+
+int stream_append(stream_t* stream, const char* s, int n);
+
+int stream_appends(stream_t* stream, const char* s, int n);
+
+int stream_vappendf(stream_t* stream, const char* fmt, va_list args);
+
+int stream_appendf(stream_t* stream, const char* fmt, ...);
 
 void bprint(char *data, int len);
 

@@ -125,18 +125,6 @@ int stream_write(stream_t *stream, const char *s, int n)
 	return n;
 }
 
-int stream_append(stream_t* stream, const char* s, int n)
-{
-	int pos = stream->pos;
-	int nwrite;
-
-	stream->pos = stream->size;
-	nwrite = stream_write(stream, s, n);
-	stream->pos = pos;
-
-	return nwrite;
-}
-
 int stream_writes(stream_t* stream, const char* s, int n)
 {
 	if (stream_rcap(stream) < (n+1)) {
@@ -246,6 +234,30 @@ int stream_writef(stream_t *stream, const char *fmt, ...)
 	r = stream_vwritef(stream, fmt, args);
 	va_end(args);
 	return r;
+}
+
+int stream_append(stream_t* stream, const char* s, int n)
+{
+	int pos = stream->pos;
+	int nwrite;
+
+	stream->pos = stream->size;
+	nwrite = stream_write(stream, s, n);
+	stream->pos = pos;
+
+	return nwrite;
+}
+
+int stream_appends(stream_t* stream, const char* s, int n)
+{
+	int pos = stream->pos;
+	int nwrite;
+
+	stream->pos = stream->size;
+	nwrite = stream_writes(stream, s, n);
+	stream->pos = pos;
+
+	return nwrite;
 }
 
 int stream_vappendf(stream_t* stream, const char* fmt, va_list args)
