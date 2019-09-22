@@ -1,14 +1,12 @@
 # http-proxy
 
-Http proxy. With http-proxy, you can assign a socks5 proxy as upstream proxy.
-And, use "chnroute" to by pass proxy.
+Http proxy. With http-proxy, you can assign a socks5 proxy as upstream proxy,
+and, use "chnroute" to by pass proxy.
 
 Note:
 
   With "--chnroute", you should make sure that the dns resolve result is clean.
-  You can use CleanDNS (https://github.com/GangZhuo/CleanDNS),
-  ChinaDNS (https://github.com/shadowsocks/ChinaDNS) or similar utilities to
-  get clean dns result.
+  You can use [CleanDNS], [ChinaDNS] or similar utilities to get clean dns result.
 
 ## Install
 
@@ -101,3 +99,7 @@ You can generate latest chnroute6.txt using this command:
 
     curl 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest' | \
 	grep ipv6 | grep CN | awk -F\| '{ printf("%s/%d\n", $4, $5) }' > chnroute6.txt
+
+[CleanDNS]:  https://github.com/GangZhuo/CleanDNS
+[ChinaDNS]:  https://github.com/shadowsocks/ChinaDNS
+[About chnroute]:  https://github.com/shadowsocks/ChinaDNS#about-chnroute
