@@ -164,6 +164,10 @@ static void ControlHandler(DWORD request);
 
 #endif
 
+#define get_addrport(a) \
+	((a)->addr.ss_family == AF_INET ? \
+		((struct sockaddr_in*)(&((a)->addr)))->sin_port :\
+		((struct sockaddr_in6*)(&((a)->addr)))->sin6_port)
 
 static char* ltrim(char* s)
 {
@@ -298,6 +302,35 @@ static void close_syslog()
 		closelog();
 	}
 #endif
+}
+
+/* is connect self */
+static int is_self(sockaddr_t *addr)
+{
+	int i, num = listen_num;
+	listen_t* listen;
+
+	for (i = 0; i < num; i++) {
+		listen = listens + i;
+		if (listen->addr.addr.ss_family == addr->addr.ss_family &&
+			get_addrport(&(listen->addr)) == get_addrport(addr)) {
+			
+			if (addr->addr.ss_family == AF_INET) {
+				struct sockaddr_in* x = (struct sockaddr_in*)(&addr->addr);
+				struct sockaddr_in* y = (struct sockaddr_in*)(&listen->addr.addr);
+				if (memcmp(&x->sin_addr, &y->sin_addr, 4) == 0)
+					return TRUE;
+			}
+			else if (addr->addr.ss_family == AF_INET6) {
+				struct sockaddr_in6* x = (struct sockaddr_in6*)(&addr->addr);
+				struct sockaddr_in6* y = (struct sockaddr_in6*)(&listen->addr.addr);
+				if (memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0)
+					return TRUE;
+			}
+		}
+	}
+
+	return FALSE;
 }
 
 static int setnonblock(sock_t sock)
@@ -1477,13 +1510,37 @@ static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 	return 0;
 }
 
+static int bad_request(conn_t* conn)
+{
+	stream_t* s = &conn->ws;
+	http_parser* parser = &conn->parser;
+	stream_reset(s);
+	if (stream_appendf(s,
+		"HTTP/%d.%d 400 Bad Request\r\n"
+		"Content-Type: text/html; charset=utf-8\r\n"
+		"Connection: close\r\n"
+		"Content-Length: 11\r\n"
+		"\r\n"
+		"Bad Request",
+		parser->http_major,
+		parser->http_minor) == -1) {
+		loge("connect_target() error: stream_appendf()");
+		return -1;
+	}
+	return 0;
+}
+
 static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
 	if (get_remote_addr(addr, conn)) {
 		loge("connect_target() error: get remote address failed %s\n", conn->url.array);
-		return -1;
+		return bad_request(conn);
+	}
+
+	if (is_self(addr)) {
+		return bad_request(conn);
 	}
 
 	if (connect_addr(addr, &conn->rsock, &conn->status)) {
