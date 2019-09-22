@@ -1,7 +1,9 @@
 debug = 0
 
 OBJS = src/log.o \
-       src/stream.o
+       src/stream.o \
+	   src/chnroute.o \
+	   http-parser/http-parser.c
 
 ifneq ($(debug), 0)
     CFLAGS += -g -DDEBUG -D_DEBUG
