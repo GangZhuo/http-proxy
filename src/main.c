@@ -300,11 +300,6 @@ static void close_syslog()
 #endif
 }
 
-static int is_ipv6(const char* ip)
-{
-	return !!strchr(ip, ':');
-}
-
 static int setnonblock(sock_t sock)
 {
 #ifdef WINDOWS
@@ -708,7 +703,7 @@ static int host2addr(sockaddr_t* addr, const char *host, const char *port)
 
 	memset(&hints, 0, sizeof(hints));
 
-	hints.ai_family = AF_UNSPEC;/* is_ipv6(host) ? AF_INET6 : AF_INET;*/
+	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
 	if ((r = getaddrinfo(host, port, &hints, &addrinfo)) != 0) {
