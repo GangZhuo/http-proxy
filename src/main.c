@@ -1534,9 +1534,11 @@ static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	if (get_remote_addr(addr, conn)) {
-		loge("connect_target() error: get remote address failed %s\n", conn->url.array);
-		return bad_request(conn);
+	if (addr->addrlen == 0) {
+		if (get_remote_addr(addr, conn)) {
+			loge("connect_target() error: get remote address failed %s\n", conn->url.array);
+			return bad_request(conn);
+		}
 	}
 
 	if (is_self(addr)) {
