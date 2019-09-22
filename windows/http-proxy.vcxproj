@@ -149,6 +149,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\http-parser\http_parser.c" />
+    <ClCompile Include="..\src\chnroute.c" />
     <ClCompile Include="..\src\main.c" />
     <ClCompile Include="..\src\log.c" />
     <ClCompile Include="..\src\stream.c" />
@@ -157,6 +158,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\http-parser\http_parser.h" />
+    <ClInclude Include="..\src\chnroute.h" />
     <ClInclude Include="..\src\dllist.h" />
     <ClInclude Include="..\src\log.h" />
     <ClInclude Include="..\src\stream.h" />

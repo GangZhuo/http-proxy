@@ -33,6 +33,7 @@ typedef int sock_t;
 #include "dllist.h"
 #include "stream.h"
 #include "../http-parser/http_parser.h"
+#include "chnroute.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -144,6 +145,7 @@ static char* launch_log = NULL;
 static char* config_file = NULL;
 static int timeout = 0;
 static char* proxy = NULL;
+static char* chnroute = NULL;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -430,28 +432,38 @@ PROGRAM_NAME " " PROGRAM_VERSION "\n\
 \n\
 Usage:\n\
 \n\
-http-proxy [-b BIND_ADDR] [-p BIND_PORT] [--config=CONFIG_PATH] [--daemon] [--pid=PID_FILE_PATH]\n\
-         [--log=LOG_FILE_PATH] [--log-level=LOG_LEVEL] [--proxy=SOCKS5_PROXY] [-v] [-V] [-h]\n\
+http-proxy [-b BIND_ADDR] [-p BIND_PORT] [--config=CONFIG_PATH]\n\
+         [--log=LOG_FILE_PATH] [--log-level=LOG_LEVEL]\n\
+         [--chnroute=CHNROUTE_FILE] [--proxy=SOCKS5_PROXY]\n\
+         [--daemon] [--pid=PID_FILE_PATH] [-v] [-V] [-h]\n\
 \n\
-Http proxy.\n\
+Http proxy. With http-proxy, you can assign a socks5 proxy as upstream proxy.\n\
+And, use \"chnroute\" to by pass proxy.\n\
+\n\
+Note:\n\
+  With \"--chnroute\", you should make sure that the dns resolve result is clean.\n\
+  You can use CleanDNS (https://github.com/GangZhuo/CleanDNS),\n\
+  ChinaDNS (https://github.com/shadowsocks/ChinaDNS) or similar utilities to \n\
+  get clean dns result.\n\
 \n\
 Options:\n\
 \n\
-  -b BIND_ADDR          Address that listens, default: " DEFAULT_LISTEN_ADDR ".\n\
-                        Use comma to separate multi addresses, e.g. 127.0.0.1:5354,[::1]:5354.\n\
-  -p BIND_PORT          Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
-                        The port specified in \"-b\" is priority .\n\
-  -t TIMEOUT            Timeout seconds, default: " XSTR(DEFAULT_TIMEOUT) ".\n\
-  --daemon              Daemonize.\n\
-  --pid=PID_FILE_PATH   pid file, default: " DEFAULT_PID_FILE ", only available on daemonize.\n\
-  --log=LOG_FILE_PATH   Write log to a file.\n\
-  --log-level=LOG_LEVEL Log level, range: [0, 7], default: " LOG_DEFAULT_LEVEL_NAME ".\n\
-  --config=CONFIG_PATH  Config file, find sample at https://github.com/GangZhuo/http-proxy.\n\
-  --proxy=SOCKS5_PROXY  Socks5 proxy, e.g. 127.0.0.1:1080 or [::1]:1080.\n\
-                        Only socks5 with no authentication is supported.\n\
-  -v                    Verbose logging.\n\
-  -h                    Show this help message and exit.\n\
-  -V                    Print version and then exit.\n\
+  -b BIND_ADDR             Address that listens, default: " DEFAULT_LISTEN_ADDR ".\n\
+                           Use comma to separate multi addresses, e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
+  -p BIND_PORT             Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
+                           The port specified in \"-b\" is priority .\n\
+  -t TIMEOUT               Timeout seconds, default: " XSTR(DEFAULT_TIMEOUT) ".\n\
+  --daemon                 Daemonize.\n\
+  --pid=PID_FILE_PATH      pid file, default: " DEFAULT_PID_FILE ", only available on daemonize.\n\
+  --log=LOG_FILE_PATH      Write log to a file.\n\
+  --log-level=LOG_LEVEL    Log level, range: [0, 7], default: " LOG_DEFAULT_LEVEL_NAME ".\n\
+  --config=CONFIG_PATH     Config file, find sample at https://github.com/GangZhuo/http-proxy.\n\
+  --chnroute=CHNROUTE_FILE Path to china route file, e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.\n\
+  --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080 or --proxy=[::1]:1080.\n\
+                           Only socks5 with no authentication is supported.\n\
+  -v                       Verbose logging.\n\
+  -h                       Show this help message and exit.\n\
+  -V                       Print version and then exit.\n\
 \n\
 Online help: <https://github.com/GangZhuo/http-proxy>\n");
 }
@@ -468,6 +480,7 @@ static int parse_args(int argc, char** argv)
 		{"config",    required_argument, NULL, 5},
 		{"launch_log",required_argument, NULL, 6},
 		{"proxy",     required_argument, NULL, 7},
+		{"chnroute",  required_argument, NULL, 8},
 		{0, 0, 0, 0}
 	};
 
@@ -493,6 +506,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 7:
 			proxy = strdup(optarg);
+			break;
+		case 8:
+			chnroute = strdup(optarg);
 			break;
 		case 'h':
 			usage();
@@ -553,6 +569,9 @@ static void print_args()
 #endif
 	if (log_file)
 		logn("log_file: %s\n", log_file);
+
+	if (chnroute)
+		logn("chnroute: %s\n", chnroute);
 
 	if (proxy)
 		logn("proxy: %s\n", proxy);
@@ -671,6 +690,12 @@ static int read_config_file(const char* config_file, int force)
 		else if (strcmp(name, "log_level") == 0 && strlen(value)) {
 			if (force || loglevel == LOG_DEFAULT_LEVEL) {
 				loglevel = atoi(value);
+			}
+		}
+		else if (strcmp(name, "chnroute") == 0 && strlen(value)) {
+			if (force || !chnroute) {
+				if (chnroute) free(chnroute);
+				chnroute = strdup(value);
 			}
 		}
 		else if (strcmp(name, "proxy") == 0 && strlen(value)) {
@@ -984,6 +1009,17 @@ static int init_proxy_server()
 		return -1;
 	}
 
+	if (chnroute) {
+		if (chnroute_init()) {
+			loge("init_proxy_server() error: chnroute_init()\n", proxy);
+			return -1;
+		}
+		if (chnroute_parse(chnroute)) {
+			loge("init_proxy_server() error: invalid chnroute \"%s\"\n", chnroute);
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
@@ -1024,6 +1060,12 @@ static void uninit_proxy_server()
 	free(log_file);
 	free(launch_log);
 	free(config_file);
+
+	if (chnroute) {
+		chnroute_free();
+		free(chnroute);
+	}
+
 }
 
 static int try_parse_as_ip4(sockaddr_t* addr, const char* host, const char* port)
@@ -1472,8 +1514,6 @@ static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 {
 	sock_t sock;
 
-	logd("connecting %s\n", get_sockaddrname(addr));
-
 	sock = socket(addr->addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
 
 	if (!sock) {
@@ -1534,16 +1574,9 @@ static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	if (addr->addrlen == 0) {
-		if (get_remote_addr(addr, conn)) {
-			loge("connect_target() error: get remote address failed %s\n", conn->url.array);
-			return bad_request(conn);
-		}
-	}
-
-	if (is_self(addr)) {
-		return bad_request(conn);
-	}
+	logd("direct connect %s - %s\n",
+		get_sockaddrname(addr),
+		conn->url.array);
 
 	if (connect_addr(addr, &conn->rsock, &conn->status)) {
 		return -1;
@@ -1561,6 +1594,10 @@ static int connect_target(conn_t* conn)
 static int connect_proxy(conn_t* conn)
 {
 	sockaddr_t* addr = &proxy_addr;
+
+	logd("proxy connect %s - %s\n",
+		get_sockaddrname(&conn->raddr),
+		conn->url.array);
 
 	conn->by_proxy = TRUE;
 	conn->proxy = (proxy_ctx*)malloc(sizeof(proxy_ctx));
@@ -1586,14 +1623,30 @@ static int by_proxy(conn_t* conn)
 {
 	if (proxy == NULL || !(*proxy))
 		return FALSE;
-	/* TODO: */
+
+	if (chnroute) {
+		struct sockaddr* addr = (struct sockaddr*)&conn->raddr.addr;
+		if (chnroute_test(addr))
+			return FALSE;
+	}
+
 	return TRUE;
 }
 
 static int connect_remote(conn_t* conn)
 {
 	int r;
-	
+	sockaddr_t* addr = &conn->raddr;
+
+	if (get_remote_addr(addr, conn)) {
+		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
+		return bad_request(conn);
+	}
+
+	if (is_self(addr)) {
+		return bad_request(conn);
+	}
+
 	conn->by_proxy = by_proxy(conn);
 
 	if (conn->by_proxy)
