@@ -2221,8 +2221,8 @@ static void run_as_daemonize()
 	pid_t pid, sid;
 	int dev_null;
 
-	if (!cleandns->pid_file) {
-		cleandns->pid_file = strdup(DEFAULT_PID_FILE);
+	if (!pid_file) {
+		pid_file = strdup(DEFAULT_PID_FILE);
 	}
 
 	pid = fork();
@@ -2231,10 +2231,10 @@ static void run_as_daemonize()
 	}
 
 	if (pid > 0) {
-		if (cleandns->pid_file) {
-			FILE* file = fopen(cleandns->pid_file, "w");
+		if (pid_file) {
+			FILE* file = fopen(pid_file, "w");
 			if (file == NULL) {
-				logc("Invalid pid file: %s\n", cleandns->pid_file);
+				logc("Invalid pid file: %s\n", pid_file);
 				exit(1);
 			}
 			fprintf(file, "%d", (int)pid);
