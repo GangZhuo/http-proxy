@@ -114,12 +114,13 @@ Online help: <https://github.com/GangZhuo/http-proxy>
 ./http-proxy -b 127.0.0.1 -p 1081 --proxy=127.0.0.1:1080 --chnroute=lan.txt,chnroute.txt,chnroute6.txt -vvvv
 ```
 
-or run as daemon with config file. you can find a sample at
-https://github.com/GangZhuo/http-proxy/blob/master/asset/http-proxy.config
+or run as daemon with config file.
 
 ```bash
 ./http-proxy --config=http-proxy.config --daemon
 ```
+
+you can find a sample at https://github.com/GangZhuo/http-proxy/blob/master/asset/http-proxy.config
 
 ### Update chnroute (IPv4)
 
