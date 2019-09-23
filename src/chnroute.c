@@ -14,6 +14,14 @@
 #include "log.h"
 #include "dllist.h"
 
+#ifndef FALSE
+#define FALSE               0
+#endif
+
+#ifndef TRUE
+#define TRUE                1
+#endif
+
 typedef struct net_mask_t {
 	uint32_t net;
 	uint32_t mask;
