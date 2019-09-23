@@ -38,6 +38,31 @@ make
 4) build project.
 ```
 
+#### Install as windows service
+
+```
+1) Copy http-proxy.exe, asset/lan.txt, asset/chnroute.txt, asset/chnroute6.txt,
+   windows/install_service.bat and windows/uninstall_service.bat to your program directory.
+
+2) Run install_service.bat with administrator permissions. 
+
+3) After installed, a file "http-proxy.config" should be automatic generated.
+   Edit "http-proxy.config" by text editor (maybe notepad).
+
+4) Press "WIN + R" to open a run window, type "services.msc", and press enter.
+   The service window should be open, find the "http-proxy" service,
+   and start the service.
+```
+
+### Uninstall windows service
+
+```
+1) Press "WIN + R" to open a run window, type "services.msc", and press enter.
+   The service window should be open, find the "http-proxy" service,
+   and stop the service.
+   
+2) Run uninstall_service.bat with administrator permissions. 
+```
 ## Usage
 
 ```
@@ -86,7 +111,7 @@ Online help: <https://github.com/GangZhuo/http-proxy>
 ### Examples
 
 ```bash
--b 127.0.0.1 -p 1081 --proxy=127.0.0.1:1080 --chnroute=lan.txt,chnroute.txt,chnroute6.txt -vvvv
+./http-proxy -b 127.0.0.1 -p 1081 --proxy=127.0.0.1:1080 --chnroute=lan.txt,chnroute.txt,chnroute6.txt -vvvv
 ```
 
 ### Update chnroute (IPv4)
