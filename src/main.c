@@ -151,6 +151,7 @@ static char* chnroute = NULL;
 static int running = 0;
 static int is_use_syslog = 0;
 static int is_use_logfile = 0;
+static const char* current_log_file = NULL;
 static listen_t listens[MAX_LISTEN] = { 0 };
 static int listen_num = 0;
 static dllist_t conns = DLLIST_INIT(conns);
@@ -238,13 +239,13 @@ static void syslog_writefile(int mask, const char* fmt, va_list args)
 
 	if (len > 0) {
 		FILE* pf;
-		pf = fopen(log_file, "a+");
+		pf = fopen(current_log_file, "a+");
 		if (pf) {
 			fwrite(buf2, 1, len, pf);
 			fclose(pf);
 		}
 		else {
-			printf("cannot open %s\n", log_file);
+			printf("cannot open %s\n", current_log_file);
 		}
 	}
 }
@@ -263,9 +264,10 @@ static void syslog_vprintf(int mask, const char* fmt, va_list args)
 #endif
 }
 
-static void open_logfile()
+static void open_logfile(const char *log_file)
 {
 	if (log_file) {
+		current_log_file = log_file;
 		log_vprintf = syslog_writefile;
 		log_vprintf_with_timestamp = syslog_writefile;
 		is_use_logfile = 1;
@@ -484,7 +486,7 @@ static int parse_args(int argc, char** argv)
 		{"log",       required_argument, NULL, 3},
 		{"log-level", required_argument, NULL, 4},
 		{"config",    required_argument, NULL, 5},
-		{"launch_log",required_argument, NULL, 6},
+		{"launch-log",required_argument, NULL, 6},
 		{"proxy",     required_argument, NULL, 7},
 		{"chnroute",  required_argument, NULL, 8},
 		{0, 0, 0, 0}
@@ -983,12 +985,10 @@ static inline int is_expired(conn_t* conn, time_t now)
 static int init_proxy_server()
 {
 	if (log_file) {
-		open_logfile();
+		open_logfile(log_file);
 	}
 	else if (launch_log) {
-		log_file = launch_log;
-		launch_log = NULL;
-		open_logfile();
+		open_logfile(launch_log);
 	}
 
 	if (config_file) {
@@ -997,7 +997,7 @@ static int init_proxy_server()
 		}
 
 		if (log_file) {
-			open_logfile();
+			open_logfile(log_file);
 		}
 	}
 
