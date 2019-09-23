@@ -54,7 +54,7 @@ make
    and start the service.
 ```
 
-### Uninstall windows service
+#### Uninstall windows service
 
 ```
 1) Press "WIN + R" to open a run window, type "services.msc", and press enter.
