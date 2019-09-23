@@ -450,17 +450,22 @@ Note:\n\
 Options:\n\
 \n\
   -b BIND_ADDR             Address that listens, default: " DEFAULT_LISTEN_ADDR ".\n\
-                           Use comma to separate multi addresses, e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
+                           Use comma to separate multi addresses, \n\
+                           e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
   -p BIND_PORT             Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
                            The port specified in \"-b\" is priority .\n\
   -t TIMEOUT               Timeout seconds, default: " XSTR(DEFAULT_TIMEOUT) ".\n\
   --daemon                 Daemonize.\n\
-  --pid=PID_FILE_PATH      pid file, default: " DEFAULT_PID_FILE ", only available on daemonize.\n\
+  --pid=PID_FILE_PATH      pid file, default: " DEFAULT_PID_FILE ", \n\
+                           only available on daemonize.\n\
   --log=LOG_FILE_PATH      Write log to a file.\n\
   --log-level=LOG_LEVEL    Log level, range: [0, 7], default: " LOG_DEFAULT_LEVEL_NAME ".\n\
-  --config=CONFIG_PATH     Config file, find sample at https://github.com/GangZhuo/http-proxy.\n\
-  --chnroute=CHNROUTE_FILE Path to china route file, e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.\n\
-  --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080 or --proxy=[::1]:1080.\n\
+  --config=CONFIG_PATH     Config file, find sample at \n\
+                           https://github.com/GangZhuo/http-proxy.\n\
+  --chnroute=CHNROUTE_FILE Path to china route file, \n\
+                           e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.\n\
+  --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080\n\
+                           or --proxy=[::1]:1080.\n\
                            Only socks5 with no authentication is supported.\n\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
