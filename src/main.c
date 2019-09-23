@@ -26,6 +26,7 @@ typedef SOCKET sock_t;
 #include <netinet/in.h>
 #include <syslog.h>
 typedef int sock_t;
+#define strnicmp strncasecmp
 #endif
 
 
