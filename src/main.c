@@ -1061,17 +1061,28 @@ static void uninit_proxy_server()
 	}
 
 	free(listen_addr);
+	listen_addr = NULL;
+
 	free(listen_port);
+	listen_port = NULL;
+
 	free(pid_file);
+	pid_file = NULL;
+
 	free(log_file);
+	log_file = NULL;
+
 	free(launch_log);
+	launch_log = NULL;
+
 	free(config_file);
+	config_file = NULL;
 
 	if (chnroute) {
 		chnroute_free();
 		free(chnroute);
+		chnroute = NULL;
 	}
-
 }
 
 static int try_parse_as_ip4(sockaddr_t* addr, const char* host, const char* port)
@@ -1580,7 +1591,7 @@ static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	logd("direct connect %s - %s\n",
+	logi("direct connect %s - %s\n",
 		get_sockaddrname(addr),
 		conn->url.array);
 
@@ -1601,7 +1612,7 @@ static int connect_proxy(conn_t* conn)
 {
 	sockaddr_t* addr = &proxy_addr;
 
-	logd("proxy connect %s - %s\n",
+	logi("proxy connect %s - %s\n",
 		get_sockaddrname(&conn->raddr),
 		conn->url.array);
 
@@ -1650,15 +1661,18 @@ static int connect_remote(conn_t* conn)
 	}
 
 	if (is_self(addr)) {
+		logw("connect_remote() error: dead loop %s\n", conn->url.array);
 		return bad_request(conn);
 	}
 
 	conn->by_proxy = by_proxy(conn);
 
-	if (conn->by_proxy)
+	if (conn->by_proxy) {
 		r = connect_proxy(conn);
-	else
+	}
+	else {
 		r = connect_target(conn);
+	}
 
 	return r;
 }
@@ -1720,7 +1734,7 @@ static int tcp_recv(sock_t sock, char * buf, int buflen)
 	if (nread == -1) {
 		int err = errno;
 		if (!is_eagain(err)) {
-			loge("tcp_recv() error: errno=%d, %s\n",
+			logi("tcp_recv() error: errno=%d, %s\n",
 				err, strerror(err));
 			return -1;
 		}
@@ -2286,8 +2300,6 @@ static void run_as_daemonize()
 		exit(1);
 
 	uninit_proxy_server();
-
-	
 
 #endif
 }

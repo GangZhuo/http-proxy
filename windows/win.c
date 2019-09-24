@@ -18,6 +18,19 @@ void win_uninit()
 	WSACleanup();
 }
 
+static char* rtrim(char* s)
+{
+	size_t len;
+	char* p;
+
+	len = strlen(s);
+	p = s + len - 1;
+
+	while (p >= s && isspace(*p)) (*(p--)) = '\0';
+
+	return s;
+}
+
 const char* win_strerror(int err_code)
 {
 	static char s_errstr[2048];
@@ -52,7 +65,7 @@ const char* win_strerror(int err_code)
 	 and it does so using LocalAlloc
 	 Gotcha!  I guess. */
 
-	return s_errstr;
+	return rtrim(s_errstr);
 }
 
 
