@@ -1727,7 +1727,7 @@ static int tcp_recv(sock_t sock, char * buf, int buflen)
 		return 0;
 	}
 	else if (nread == 0) {
-		loge("tcp_recv() error: connection closed by peer\n");
+		logd("tcp_recv(): connection closed by peer\n");
 		return -1;
 	}
 	else {
@@ -2112,7 +2112,7 @@ static int do_loop()
 				}
 
 				if (!r && is_expired(conn, now)) {
-					loge("timeout - %s\n", get_sockname(conn->sock));
+					logd("timeout - %s\n", get_sockname(conn->sock));
 					r = -1;
 				}
 
