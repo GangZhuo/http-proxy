@@ -1681,8 +1681,6 @@ static int on_headers_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
 
-	logd("on_headers_complete(): keep_alive=%d\n", http_should_keep_alive(parser));
-
 	if (conn->field.status != fs_none) {
 		if (on_field_complete(parser))
 			return -1;
@@ -1690,6 +1688,8 @@ static int on_headers_complete(http_parser* parser)
 	else {
 		detect_first_line_complete(parser);
 	}
+
+	logd("on_headers_complete(): keep_alive=%d\n", http_should_keep_alive(parser));
 
 	if (parser->method != HTTP_CONNECT) {
 		if (stream_appendf(&conn->rws, "\r\n") == -1) {
@@ -1713,8 +1713,31 @@ static int on_headers_complete(http_parser* parser)
 static int on_body(http_parser* parser, const char* at, size_t length)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logd("on_body(): %d bytes\n", (int)length);
 	if (stream_appends(&conn->rws, at, (int)length) == -1) {
 		loge("on_body() error: stream_appends()\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int on_chunk_header(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logd("on_chunk_header(): %" PRIu64 " bytes\n", parser->content_length);
+	if (stream_appendf(&conn->rws, "%x\r\n", parser->content_length) == -1) {
+		loge("on_chunk_header() error: stream_appendf()\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int on_chunk_complete(http_parser* parser)
+{
+	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logd("on_chunk_complete()\n");
+	if (stream_appends(&conn->rws, "\r\n", 2) == -1) {
+		loge("on_chunk_complete() error: stream_appends()\n");
 		return -1;
 	}
 	return 0;
@@ -1723,6 +1746,7 @@ static int on_body(http_parser* parser, const char* at, size_t length)
 static int on_message_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
+	logd("on_message_complete()\n");
 	return 0;
 }
 
@@ -1783,8 +1807,8 @@ static int handle_recv(conn_t* conn)
 			.on_headers_complete = on_headers_complete,
 			.on_body = on_body,
 			.on_message_complete = on_message_complete,
-			.on_chunk_header = NULL,
-			.on_chunk_complete = NULL,
+			.on_chunk_header = on_chunk_header,
+			.on_chunk_complete = on_chunk_complete,
 		};
 
 		nparsed = http_parser_execute(&conn->parser, &req_settings, buffer, nread);
@@ -2030,22 +2054,27 @@ static int do_loop()
 		{
 			dlitem_t* cur, * nxt;
 			conn_t* conn;
+			int is_local_sending;
+			int is_remote_sending;
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
 				max_fd = MAX(max_fd, conn->sock);
-				if (stream_rsize(&conn->ws) > 0)
+				is_local_sending = stream_rsize(&conn->ws) > 0;
+				is_remote_sending = conn->rsock > 0 &&
+					(conn->status == cs_connecting ||
+					 (!conn->proxy && stream_rsize(&conn->rws) > 0) ||
+					 (conn->proxy && stream_rsize(&conn->proxy->ws) > 0));
+				if (is_local_sending)
 					FD_SET(conn->sock, &writeset);
-				else
+				else if(!is_remote_sending)
 					FD_SET(conn->sock, &readset);
 				FD_SET(conn->sock, &errorset);
 
 				if (conn->rsock > 0) {
 					max_fd = MAX(max_fd, conn->rsock);
-					if (conn->status == cs_connecting ||
-						(!conn->proxy && stream_rsize(&conn->rws) > 0) ||
-						(conn->proxy && stream_rsize(&conn->proxy->ws) > 0))
+					if (is_remote_sending)
 						FD_SET(conn->rsock, &writeset);
-					else
+					else if (!is_local_sending)
 						FD_SET(conn->rsock, &readset);
 					FD_SET(conn->rsock, &errorset);
 				}
