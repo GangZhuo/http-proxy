@@ -26,7 +26,7 @@ static char* rtrim(char* s)
 	len = strlen(s);
 	p = s + len - 1;
 
-	while (p >= s && isspace(*p)) (*(p--)) = '\0';
+	while (p >= s && isspace((int)(*((unsigned char*)p)))) (*(p--)) = '\0';
 
 	return s;
 }

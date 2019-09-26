@@ -176,7 +176,7 @@ static void ControlHandler(DWORD request);
 static char* ltrim(char* s)
 {
 	char* p = s;
-	while (p && (*p) && isspace(*p))
+	while (p && (*p) && isspace((int)(*((unsigned char*)p))))
 		p++;
 	return p;
 }
@@ -189,7 +189,7 @@ static char* rtrim(char* s)
 	len = strlen(s);
 	p = s + len - 1;
 
-	while (p >= s && isspace(*p)) (*(p--)) = '\0';
+	while (p >= s && isspace((int)(*((unsigned char*)p)))) (*(p--)) = '\0';
 
 	return s;
 }
@@ -593,7 +593,7 @@ static void parse_option(char* ln, char** option, char** name, char** value)
 	*name = NULL;
 	*value = NULL;
 
-	while (*p && !isspace(*p)) p++;
+	while (*p && !isspace((int)(*((unsigned char*)p)))) p++;
 
 	if (!(*p))
 		return;
@@ -604,7 +604,7 @@ static void parse_option(char* ln, char** option, char** name, char** value)
 
 	*name = p;
 
-	while (*p && !isspace(*p)) p++;
+	while (*p && !isspace((int)(*((unsigned char*)p)))) p++;
 
 	if (!(*p))
 		return;
@@ -648,7 +648,7 @@ static int read_config_file(const char* config_file, int force)
 		if (strncmp(ln, "config", 6) == 0 &&
 			isspace(ln[6]) &&
 			strncmp((ln = ltrim(ln + 6)), "cfg", 3) == 0 &&
-			(ln[3] == '\0' || isspace(ln[3]))) {
+			(ln[3] == '\0' || isspace((int)(*((unsigned char*)ln + 3))))) {
 			cnf_index++;
 			if (cnf_index > 0) /*only parse first 'config cfg'*/
 				break;
