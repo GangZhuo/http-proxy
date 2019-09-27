@@ -2045,6 +2045,8 @@ static int do_loop()
 		for (i = 0; i < listen_num; i++) {
 			listen_t* listen = listens + i;
 
+			if (!running) break;
+
 			max_fd = MAX(max_fd, listen->sock);
 
 			FD_SET(listen->sock, &readset);
@@ -2058,6 +2060,9 @@ static int do_loop()
 			int is_remote_sending;
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
+
+				if (!running) break;
+
 				max_fd = MAX(max_fd, conn->sock);
 				is_local_sending = stream_rsize(&conn->ws) > 0;
 				is_remote_sending = conn->rsock > 0 &&
@@ -2081,16 +2086,22 @@ static int do_loop()
 			}
 		}
 
+		if (!running) break;
+
 		if (select(max_fd + 1, &readset, &writeset, &errorset, &timeout) == -1) {
 			loge("select() error: errno=%d, %s \n",
 				errno, strerror(errno));
 			return -1;
 		}
 
+		if (!running) break;
+
 		now = time(NULL);
 
 		for (i = 0; i < listen_num; i++) {
 			listen_t* listen = listens + i;
+
+			if (!running) break;
 
 			if (FD_ISSET(listen->sock, &errorset)) {
 				loge("do_loop(): listen.sock error\n");
@@ -2108,6 +2119,8 @@ static int do_loop()
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
 
+				if (!running) break;
+
 				if (FD_ISSET(conn->sock, &errorset)) {
 					int err = getsockerr(conn->sock);
 					loge("do_loop(): conn.sock error: errno=%d, %s \n",
@@ -2123,6 +2136,8 @@ static int do_loop()
 				else {
 					r = 0;
 				}
+
+				if (!running) break;
 
 				if (!r && conn->rsock > 0) {
 					if (FD_ISSET(conn->rsock, &errorset)) {
@@ -2153,6 +2168,8 @@ static int do_loop()
 							r = handle_rrecv(conn);
 					}
 				}
+
+				if (!running) break;
 
 				if (!r && is_expired(conn, now)) {
 					logd("timeout - %s\n", get_sockname(conn->sock));
@@ -2222,6 +2239,10 @@ static void ServiceMain(int argc, char** argv)
 		return;
 
 	uninit_proxy_server();
+
+	ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+	ServiceStatus.dwWin32ExitCode = 0;
+	SetServiceStatus(hStatus, &ServiceStatus);
 }
 
 static void ControlHandler(DWORD request)
@@ -2230,10 +2251,6 @@ static void ControlHandler(DWORD request)
 	case SERVICE_CONTROL_STOP:
 	case SERVICE_CONTROL_SHUTDOWN:
 		running = 0;
-		uninit_proxy_server();
-		ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-		ServiceStatus.dwWin32ExitCode = 0;
-		SetServiceStatus(hStatus, &ServiceStatus);
 		break;
 	default:
 		SetServiceStatus(hStatus, &ServiceStatus);
