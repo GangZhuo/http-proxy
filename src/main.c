@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 
 #ifdef WINDOWS
 #include "../windows/win.h"
@@ -25,6 +26,7 @@ typedef SOCKET sock_t;
 #include <time.h>
 #include <netinet/in.h>
 #include <syslog.h>
+#include <netdb.h>
 typedef int sock_t;
 #define strnicmp strncasecmp
 #endif
