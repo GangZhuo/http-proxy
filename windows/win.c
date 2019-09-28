@@ -1,6 +1,8 @@
 #include "win.h"
 #include "../src/log.h"
 
+char* rtrim(char* s);
+
 void win_init()
 {
 	WSADATA wsaData;
@@ -16,19 +18,6 @@ void win_init()
 void win_uninit()
 {
 	WSACleanup();
-}
-
-static char* rtrim(char* s)
-{
-	size_t len;
-	char* p;
-
-	len = strlen(s);
-	p = s + len - 1;
-
-	while (p >= s && isspace((int)(*((unsigned char*)p)))) (*(p--)) = '\0';
-
-	return s;
 }
 
 const char* win_strerror(int err_code)

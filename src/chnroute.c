@@ -64,7 +64,12 @@ static int is_ipv6(const char* ip)
 
 static int cmp_net_mask(const void* a, const void* b)
 {
-	return ((net_mask_t*)a)->net - ((net_mask_t*)b)->net;
+	uint32_t x, y;
+	x = ((net_mask_t*)a)->net;
+	y = ((net_mask_t*)b)->net;
+	if (x < y) return -1;
+	else if (x > y) return 1;
+	else return 0;
 }
 
 static int cmp_net_mask6(const void* a, const void* b)
@@ -85,6 +90,7 @@ int chnroute_test4(struct in_addr* ip)
 	int l = 0, r = netlist->entries - 1;
 	int m, cmp;
 	net_mask_t ip_net;
+	net_mask_t* find;
 	if (netlist->entries == 0)
 		return FALSE;
 	ip_net.net = ntohl(ip->s_addr);
@@ -104,8 +110,8 @@ int chnroute_test4(struct in_addr* ip)
 				break;
 		}
 	}
-	if ((netlist->nets[l].net ^ ip_net.net) &
-		(UINT32_MAX ^ netlist->nets[l].mask)) {
+	find = &netlist->nets[l];
+	if ((ip_net.net & find->mask) != find->net) {
 		return FALSE;
 	}
 	return TRUE;
@@ -143,7 +149,7 @@ int chnroute_test6(struct in6_addr* ip)
 	}
 	find = &netlist->nets6[l];
 	for (i = 0; i < 4; i++) {
-		if ((find->net[i] ^ ip_net.net[i]) & find->mask[i]) {
+		if ((ip_net.net[i] & find->mask[i]) != find->net[i]) {
 			return FALSE;
 		}
 	}
@@ -170,7 +176,7 @@ static int parse_netmask(net_mask_t* netmask, char* line)
 	sp_pos = strchr(line, '/');
 	if (sp_pos) {
 		*sp_pos = 0;
-		netmask->mask = (1 << (32 - atoi(sp_pos + 1))) - 1;
+		netmask->mask = UINT32_MAX ^ (((uint32_t)1 << (32 - atoi(sp_pos + 1))) - 1);
 	}
 	else {
 		netmask->mask = UINT32_MAX;
