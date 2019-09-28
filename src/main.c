@@ -37,6 +37,7 @@ typedef int sock_t;
 #include "stream.h"
 #include "../http-parser/http_parser.h"
 #include "chnroute.h"
+#include "dnscache.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -45,6 +46,7 @@ typedef int sock_t;
 #define DEFAULT_LISTEN_PORT "1080"
 #define DEFAULT_PID_FILE "/var/run/http-proxy.pid"
 #define DEFAULT_TIMEOUT 30
+#define DEFAULT_DNS_TIMEOUT 600 /* 10 minutes */
 #define LISTEN_BACKLOG	128
 #define MAX_LISTEN 8
 #define BUF_SIZE 4096
@@ -158,6 +160,7 @@ static int timeout = 0;
 static char* proxy = NULL;
 static char* chnroute = NULL;
 static int ipv6_prefer = 0;
+static int dns_timeout = -1;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -467,7 +470,9 @@ Options:\n\
                            e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
   -p BIND_PORT             Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
                            The port specified in \"-b\" is priority .\n\
-  -t TIMEOUT               Timeout seconds, default: " XSTR(DEFAULT_TIMEOUT) ".\n\
+  -t TIMEOUT               Timeout (seconds), default: " XSTR(DEFAULT_TIMEOUT) ".\n\
+  --dns-timeout=TIMEOUT    DNS cache timeout (seconds), default: " XSTR(DEFAULT_DNS_TIMEOUT) ".\n\
+                           0 mean no cache.\n\
   --daemon                 Daemonize.\n\
   --pid=PID_FILE_PATH      pid file, default: " DEFAULT_PID_FILE ", \n\
                            only available on daemonize.\n\
@@ -502,6 +507,7 @@ static int parse_args(int argc, char** argv)
 		{"proxy",      required_argument, NULL, 7},
 		{"chnroute",   required_argument, NULL, 8},
 		{"ipv6-prefer",no_argument,       NULL, 9},
+		{"dns-timeout",required_argument, NULL, 10},
 		{0, 0, 0, 0}
 	};
 
@@ -533,6 +539,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 9:
 			ipv6_prefer = 1;
+			break;
+		case 10:
+			dns_timeout = atoi(optarg);
 			break;
 		case 'h':
 			usage();
@@ -572,6 +581,9 @@ static int check_args()
 	if (timeout == 0) {
 		timeout = DEFAULT_TIMEOUT;
 	}
+	if (dns_timeout == -1) {
+		dns_timeout = DEFAULT_DNS_TIMEOUT;
+	}
 	if (loglevel >= LOG_DEBUG) {
 		logflags = LOG_MASK_RAW;
 	}
@@ -602,7 +614,10 @@ static void print_args()
 
 	if (ipv6_prefer)
 		logn("ipv6 prefer: yes\n");
-}
+
+	if (dns_timeout > 0)
+		logn("dns cache timeout: %d\n", dns_timeout);
+	}
 
 static void parse_option(char* ln, char** option, char** name, char** value)
 {
@@ -732,12 +747,17 @@ static int read_config_file(const char* config_file, int force)
 			}
 		}
 		else if (strcmp(name, "ipv6_prefer") == 0 && strlen(value)) {
-			if (force || !ipv6_prefer) {
-				ipv6_prefer = is_true_val(value);
-			}
+		if (force || !ipv6_prefer) {
+			ipv6_prefer = is_true_val(value);
+		}
+		}
+		else if (strcmp(name, "dns_timeout") == 0 && strlen(value)) {
+		if (force || dns_timeout == -1) {
+			dns_timeout = atoi(value);
+		}
 		}
 		else {
-			/*do nothing*/
+		/*do nothing*/
 		}
 	}
 
@@ -785,23 +805,33 @@ static int parse_addrstr(char* s, char** host, char** port)
 	return 0;
 }
 
-static int host2addr(sockaddr_t* addr, const char *host, const char *port)
+static int host2addr(sockaddr_t* addr, const char* host, const char* port)
 {
 	struct addrinfo hints;
 	struct addrinfo* addrinfo;
 	int r;
 
+	if (dns_timeout > 0 && dnscache_get(host, (char*)addr)) {
+		if (addr->addr.ss_family == AF_INET)
+			((struct sockaddr_in*)(&addr->addr))->sin_port = htons((uint16_t)atoi(port));
+		else
+			((struct sockaddr_in6*)(&addr->addr))->sin6_port = htons((uint16_t)atoi(port));
+		logd("host2addr(): hit dns cache - %s - %s:%s \n",
+			get_sockaddrname(addr), host, port);
+		return 0;
+	}
+
 	memset(&hints, 0, sizeof(hints));
 
 	hints.ai_family = ipv6_prefer ? AF_INET6 : AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
-	
+
 	r = getaddrinfo(host, port, &hints, &addrinfo);
 	if (r == EAI_NODATA || r == EAI_ADDRFAMILY) {
 		hints.ai_family = ipv6_prefer ? AF_INET : AF_INET6;
 		r = getaddrinfo(host, port, &hints, &addrinfo);
 	}
-	
+
 	if (r != 0)
 	{
 		loge("host2addr() error: retval=%d %s %s:%s\n",
@@ -813,6 +843,13 @@ static int host2addr(sockaddr_t* addr, const char *host, const char *port)
 	addr->addrlen = (int)addrinfo->ai_addrlen;
 
 	freeaddrinfo(addrinfo);
+
+	if (dns_timeout > 0) {
+		if (dnscache_add(host, (char*)addr, sizeof(sockaddr_t))) {
+			loge("host2addr() error: add dns cache failed - %s\n", host);
+			return -1;
+		}
+	}
 
 	return 0;
 
@@ -1036,6 +1073,11 @@ static int init_proxy_server()
 	if (check_args())
 		return -1;
 
+	if (dnscache_init())
+		return -1;
+
+	dnscache_timeout = dns_timeout;
+
 	if (resolve_listens() != 0)
 		return -1;
 
@@ -1115,6 +1157,8 @@ static void uninit_proxy_server()
 		free(chnroute);
 		chnroute = NULL;
 	}
+
+	dnscache_free();
 }
 
 static int try_parse_as_ip4(sockaddr_t* addr, const char* host, const char* port)
@@ -2174,6 +2218,8 @@ static int do_loop()
 				}
 			}
 		}
+
+		dnscache_check_expire(now);
 	}
 
 	return 0;

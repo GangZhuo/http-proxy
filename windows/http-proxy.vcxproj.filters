@@ -36,6 +36,12 @@
     <ClCompile Include="..\src\chnroute.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\dnscache.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\rbtree\rbtree.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\log.h">
@@ -57,6 +63,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\src\chnroute.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\dnscache.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\rbtree\rbtree.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
