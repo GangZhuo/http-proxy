@@ -72,6 +72,10 @@ typedef int sock_t;
 #define WSAEWOULDBLOCK EINPROGRESS
 #endif
 
+#ifndef EAI_ADDRFAMILY
+#define EAI_ADDRFAMILY EAI_NODATA
+#endif
+
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
 typedef struct sockaddr_t {
@@ -147,6 +151,7 @@ static char* config_file = NULL;
 static int timeout = 0;
 static char* proxy = NULL;
 static char* chnroute = NULL;
+static int ipv6_prefer = 0;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -469,6 +474,7 @@ Options:\n\
   --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080\n\
                            or --proxy=[::1]:1080.\n\
                            Only socks5 with no authentication is supported.\n\
+  --ipv6-prefer            IPv6 preferential.\n\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
   -V                       Print version and then exit.\n\
@@ -481,14 +487,15 @@ static int parse_args(int argc, char** argv)
 	int ch;
 	int option_index = 0;
 	static struct option long_options[] = {
-		{"daemon",    no_argument,       NULL, 1},
-		{"pid",       required_argument, NULL, 2},
-		{"log",       required_argument, NULL, 3},
-		{"log-level", required_argument, NULL, 4},
-		{"config",    required_argument, NULL, 5},
-		{"launch-log",required_argument, NULL, 6},
-		{"proxy",     required_argument, NULL, 7},
-		{"chnroute",  required_argument, NULL, 8},
+		{"daemon",     no_argument,       NULL, 1},
+		{"pid",        required_argument, NULL, 2},
+		{"log",        required_argument, NULL, 3},
+		{"log-level",  required_argument, NULL, 4},
+		{"config",     required_argument, NULL, 5},
+		{"launch-log", required_argument, NULL, 6},
+		{"proxy",      required_argument, NULL, 7},
+		{"chnroute",   required_argument, NULL, 8},
+		{"ipv6-prefer",no_argument,       NULL, 9},
 		{0, 0, 0, 0}
 	};
 
@@ -517,6 +524,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 8:
 			chnroute = strdup(optarg);
+			break;
+		case 9:
+			ipv6_prefer = 1;
 			break;
 		case 'h':
 			usage();
@@ -583,6 +593,9 @@ static void print_args()
 
 	if (proxy)
 		logn("proxy: %s\n", proxy);
+
+	if (ipv6_prefer)
+		logn("ipv6 prefer: yes\n");
 }
 
 static void parse_option(char* ln, char** option, char** name, char** value)
@@ -712,6 +725,11 @@ static int read_config_file(const char* config_file, int force)
 				proxy = strdup(value);
 			}
 		}
+		else if (strcmp(name, "ipv6_prefer") == 0 && strlen(value)) {
+			if (force || !ipv6_prefer) {
+				ipv6_prefer = is_true_val(value);
+			}
+		}
 		else {
 			/*do nothing*/
 		}
@@ -769,11 +787,19 @@ static int host2addr(sockaddr_t* addr, const char *host, const char *port)
 
 	memset(&hints, 0, sizeof(hints));
 
-	hints.ai_family = AF_UNSPEC;
+	hints.ai_family = ipv6_prefer ? AF_INET6 : AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
-
-	if ((r = getaddrinfo(host, port, &hints, &addrinfo)) != 0) {
-		loge("host2addr() error: %s %s:%s\n", gai_strerror(r), host, port);
+	
+	r = getaddrinfo(host, port, &hints, &addrinfo);
+	if (r == EAI_NODATA || r == EAI_ADDRFAMILY) {
+		hints.ai_family = ipv6_prefer ? AF_INET : AF_INET6;
+		r = getaddrinfo(host, port, &hints, &addrinfo);
+	}
+	
+	if (r != 0)
+	{
+		loge("host2addr() error: retval=%d %s %s:%s\n",
+			r, gai_strerror(r), host, port);
 		return -1;
 	}
 
