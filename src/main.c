@@ -76,6 +76,10 @@ typedef int sock_t;
 #define WSAEWOULDBLOCK EINPROGRESS
 #endif
 
+#ifndef WSAETIMEDOUT
+#define WSAETIMEDOUT ETIMEDOUT
+#endif
+
 #ifndef EAI_NODATA
 #define EAI_NODATA EAI_NONAME
 #endif
@@ -147,6 +151,10 @@ typedef struct conn_t {
 	} field;
 	int by_proxy;
 	proxy_ctx* proxy;
+	uint64_t rx; /* receive bytes */
+	uint64_t tx; /* transmit bytes */
+	uint64_t rrx; /* remote receive bytes */
+	uint64_t rtx; /* remote transmit bytes */
 } conn_t;
 
 static char* listen_addr = NULL;
@@ -1313,6 +1321,46 @@ static int get_remote_addr(sockaddr_t* addr, const conn_t* conn)
 	return 0;
 }
 
+static int remove_dnscache(conn_t* conn)
+{
+	char* host, * port;
+
+	if (dns_timeout <= 0)
+		return 0;
+
+	if (conn->mode == pm_tunnel) {
+		char* copy = strdup(conn->url.array);
+		if (parse_addrstr(copy, &host, &port)) {
+			free(copy);
+			loge("remove_dnscache() error: get 'host' from \"%s\" failed\n",
+				conn->url.array);
+			return -1;
+		}
+		if (dnscache_remove(host)) {
+			loge("remove_dnscache() error: remove \"%s\" failed\n", host);
+			free(copy);
+			return -1;
+		}
+		free(copy);
+		return 0;
+	}
+	else {
+		if (get_host_and_port(&host, &port, conn->url.array, conn->url.size, 0)) {
+			loge("remove_dnscache() error: get 'host' from \"%s\" failed\n", conn->url.array);
+			return -1;
+		}
+		if (dnscache_remove(host)) {
+			loge("remove_dnscache() error: remove \"%s\" failed\n", host);
+			free(host);
+			free(port);
+			return -1;
+		}
+		free(host);
+		free(port);
+		return 0;
+	}
+}
+
 static int on_remote_connected(conn_t* conn)
 {
 	http_parser* parser = &conn->parser;
@@ -1405,7 +1453,7 @@ static int tcp_send(sock_t sock, stream_t* s)
 			loge("tcp_send() error: stream_quake()\n");
 			return -1;
 		}
-		return 0;
+		return nsend;
 	}
 }
 
@@ -1413,12 +1461,17 @@ static int handle_write(conn_t* conn)
 {
 	sock_t sock = conn->sock;
 	stream_t* s = &conn->ws;
-	int err;
+	int nsend;
 
-	err = tcp_send(sock, s);
+	nsend = tcp_send(sock, s);
 
-	if (err)
+	if (nsend == -1)
 		return -1;
+
+	if (nsend == 0)
+		return 0;
+
+	conn->tx += nsend;
 
 	logd("handle_write(): write to %s\n", get_sockname(sock));
 
@@ -1431,12 +1484,15 @@ static int proxy_write(conn_t* conn)
 {
 	sock_t sock = conn->rsock;
 	stream_t* s = &conn->proxy->ws;
-	int err;
+	int nsend;
 
-	err = tcp_send(sock, s);
+	nsend = tcp_send(sock, s);
 
-	if (err)
+	if (nsend == -1)
 		return -1;
+
+	if (nsend == 0)
+		return 0;
 
 	logd("proxy_write(): write to %s\n", get_sockaddrname(&proxy_addr));
 
@@ -1449,12 +1505,17 @@ static int handle_rwrite(conn_t* conn)
 {
 	sock_t sock = conn->rsock;
 	stream_t* s = &conn->rws;
-	int err;
+	int nsend;
 
-	err = tcp_send(sock, s);
+	nsend = tcp_send(sock, s);
 
-	if (err)
+	if (nsend == -1)
 		return -1;
+
+	if (nsend == 0)
+		return 0;
+
+	conn->rtx += nsend;
 
 	logd("handle_rwrite(): write to %s\n", conn->url.array);
 
@@ -1864,6 +1925,8 @@ static int handle_recv(conn_t* conn)
 	if (nread == 0)
 		return 0;
 
+	conn->rx += nread;
+
 	logd("handle_recv(): recv from %s\n", get_sockname(conn->sock));
 
 	if (conn->mode == pm_tunnel) {
@@ -2045,6 +2108,8 @@ static int handle_rrecv(conn_t* conn)
 	if (nread == 0)
 		return 0;
 
+	conn->rrx += nread;
+
 	logd("handle_rrecv(): recv from %s\n", conn->url.array);
 
 	if (stream_appends(&conn->ws, buffer, nread) == -1) {
@@ -2180,6 +2245,9 @@ static int do_loop()
 						loge("do_loop(): conn.rsock error: errno=%d, %s \n",
 							err, strerror(err));
 						r = -1;
+						if (err == WSAETIMEDOUT || err == ETIMEDOUT) {
+							remove_dnscache(conn);
+						}
 					}
 					else if (FD_ISSET(conn->rsock, &writeset)) {
 						if (conn->status == cs_connecting) {
@@ -2209,6 +2277,9 @@ static int do_loop()
 				if (!r && is_expired(conn, now)) {
 					logd("timeout - %s\n", get_sockname(conn->sock));
 					r = -1;
+					if (conn->rrx == 0) {
+						remove_dnscache(conn);
+					}
 				}
 
 				if (r) {
