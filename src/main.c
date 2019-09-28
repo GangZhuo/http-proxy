@@ -1890,97 +1890,56 @@ static char* sin_port_to_bytes(uint16_t port)
 
 static int proxy_handshake1(conn_t* conn)
 {
-	char* host, * port;
-	sockaddr_t addr;
+	struct sockaddr* addr = (struct sockaddr*) & conn->raddr.addr;
 	stream_t* s;
-
-	if (get_host_and_port(&host, &port, conn->url.array, conn->url.size, conn->mode == pm_tunnel)) {
-		loge("proxy_handshake0() error: parse \"%s\" failed\n", conn->url.array);
-		return -1;
-	}
-
-	memset(&addr, 0, sizeof(sockaddr_t));
 
 	s = &conn->proxy->ws;
 
-	if (try_parse_as_ip(&addr, host, port)) {
-		if (addr.addr.ss_family == AF_INET) {
-			struct sockaddr_in* in = (struct sockaddr_in*)(&addr.addr);
+	if (addr->sa_family == AF_INET) {
+		struct sockaddr_in* in = (struct sockaddr_in*)addr;
 
-			if (stream_appends(s, "\x5\x1\0\x1", 4) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
-
-			if (stream_appends(s, (const char*)&in->sin_addr, 4) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
-
-			if (stream_appends(s, sin_port_to_bytes(in->sin_port), 2) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
+		if (stream_appends(s, "\x5\x1\0\x1", 4) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
+			goto err;
 		}
-		else if (addr.addr.ss_family == AF_INET6) {
-			struct sockaddr_in6* in = (struct sockaddr_in6*)(&addr.addr);
 
-			if (stream_appends(s, "\x5\x1\0\x4", 4) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
-
-			if (stream_appends(s, (const char*)&in->sin6_addr, 16) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
-
-			if (stream_appends(s, sin_port_to_bytes(in->sin6_port), 2) == -1) {
-				loge("proxy_handshake0() error: stream_appends()\n");
-				goto err;
-			}
+		if (stream_appends(s, (const char*)& in->sin_addr, 4) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
+			goto err;
 		}
-		else {
-			loge("proxy_handshake0() error: unknown address family\n");
+
+		if (stream_appends(s, sin_port_to_bytes(in->sin_port), 2) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
+			goto err;
+		}
+	}
+	else if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6* in = (struct sockaddr_in6*)addr;
+
+		if (stream_appends(s, "\x5\x1\0\x4", 4) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, (const char*)& in->sin6_addr, 16) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, sin_port_to_bytes(in->sin6_port), 2) == -1) {
+			loge("proxy_handshake0() error: stream_appends()\n");
 			goto err;
 		}
 	}
 	else {
-		uint8_t hostlen;
-		uint16_t iport;
-
-		if (stream_appends(s, "\x5\x1\0\x3", 4) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
-			goto err;
-		}
-
-		hostlen = (uint8_t)strlen(host);
-
-		if (stream_appends(s, &hostlen, 1) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
-			goto err;
-		}
-
-		if (stream_appends(s, host, (int)hostlen) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
-			goto err;
-		}
-
-		iport = htons(atoi(port));
-
-		if (stream_appends(s, sin_port_to_bytes(iport), 2) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
-			goto err;
-		}
+		loge("proxy_handshake0() error: unknown address family\n");
+		goto err;
 	}
 
 	conn->proxy->status = ps_handshake1;
 
 	return 0;
-
 err:
-	free(host);
-	free(port);
 	return -1;
 }
 
