@@ -3,7 +3,9 @@ debug = 0
 OBJS = src/log.o \
        src/stream.o \
 	   src/chnroute.o \
-	   http-parser/http_parser.c
+	   src/dnscache.o \
+	   http-parser/http_parser.o \
+	   rbtree/rbtree.c
 
 ifneq ($(debug), 0)
     CFLAGS += -g -DDEBUG -D_DEBUG
