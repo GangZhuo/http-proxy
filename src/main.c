@@ -74,6 +74,10 @@ typedef int sock_t;
 #define WSAEWOULDBLOCK EINPROGRESS
 #endif
 
+#ifndef EAI_NODATA
+#define EAI_NODATA EAI_NONAME
+#endif
+
 #ifndef EAI_ADDRFAMILY
 #define EAI_ADDRFAMILY EAI_NODATA
 #endif
