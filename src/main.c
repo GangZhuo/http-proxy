@@ -110,6 +110,8 @@ typedef enum conn_status {
 	cs_none = 0,
 	cs_connecting,
 	cs_connected,
+	cs_closing, /* close immediately */
+	cs_rsp_closing, /* close after response */
 } conn_status;
 
 typedef enum proxy_mode {
@@ -1048,10 +1050,15 @@ static void destroy_conn(conn_t* conn)
 	free(conn);
 }
 
-static inline void update_expire(conn_t* conn)
+static inline void close_after(conn_t* conn, int interval)
 {
 	time_t t = time(NULL);
-	conn->expire = t + timeout;
+	conn->expire = t + interval;
+}
+
+static inline void update_expire(conn_t* conn)
+{
+	close_after(conn, timeout);
 }
 
 static inline int is_expired(conn_t* conn, time_t now)
@@ -1475,7 +1482,12 @@ static int handle_write(conn_t* conn)
 
 	logd("handle_write(): write to %s\n", get_sockname(sock));
 
-	update_expire(conn);
+	if (conn->status == cs_rsp_closing) {
+		close_after(conn, 3);
+	}
+	else {
+		update_expire(conn);
+	}
 
 	return 0;
 }
@@ -1719,8 +1731,10 @@ static int bad_request(conn_t* conn)
 		parser->http_major,
 		parser->http_minor) == -1) {
 		loge("connect_target() error: stream_appendf()");
+		conn->status = cs_closing;
 		return -1;
 	}
+	conn->status = cs_rsp_closing;
 	return 0;
 }
 
@@ -1787,9 +1801,43 @@ static int by_proxy(conn_t* conn)
 	return TRUE;
 }
 
-static int connect_remote(conn_t* conn)
+static void on_got_remote_addr(sockaddr_t* addr, conn_t* conn)
 {
 	int r;
+	if (!addr) {
+		loge("on_got_remote_addr() error: get remote address failed %s\n", conn->url.array);
+		bad_request(conn);
+		return;
+	}
+
+	if (is_self(addr)) {
+		logw("on_got_remote_addr() error: dead loop %s\n", conn->url.array);
+		bad_request(conn);
+		return;
+	}
+
+	conn->by_proxy = by_proxy(conn);
+
+	if (conn->by_proxy) {
+		r = connect_proxy(conn);
+		if (r != 0) {
+			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
+			bad_request(conn);
+			return;
+		}
+	}
+	else {
+		r = connect_target(conn);
+		if (r != 0) {
+			logw("on_got_remote_addr() error: connect remote failed %s\n", conn->url.array);
+			bad_request(conn);
+			return;
+		}
+	}
+}
+
+static int connect_remote(conn_t* conn)
+{
 	sockaddr_t* addr = &conn->raddr;
 
 	if (get_remote_addr(addr, conn)) {
@@ -1797,21 +1845,9 @@ static int connect_remote(conn_t* conn)
 		return bad_request(conn);
 	}
 
-	if (is_self(addr)) {
-		logw("connect_remote() error: dead loop %s\n", conn->url.array);
-		return bad_request(conn);
-	}
+	on_got_remote_addr(addr, conn);
 
-	conn->by_proxy = by_proxy(conn);
-
-	if (conn->by_proxy) {
-		r = connect_proxy(conn);
-	}
-	else {
-		r = connect_target(conn);
-	}
-
-	return r;
+	return 0;
 }
 
 static int on_headers_complete(http_parser* parser)
@@ -2157,7 +2193,9 @@ static int do_loop()
 			dlitem_t* cur, * nxt;
 			conn_t* conn;
 			int is_local_sending;
+			int is_remote_connected;
 			int is_remote_sending;
+			int is_closing;
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
 
@@ -2165,17 +2203,25 @@ static int do_loop()
 
 				max_fd = MAX(max_fd, conn->sock);
 				is_local_sending = stream_rsize(&conn->ws) > 0;
+				is_remote_connected = conn->rsock > 0 &&
+					conn->status == cs_connected &&
+					!conn->proxy;
 				is_remote_sending = conn->rsock > 0 &&
 					(conn->status == cs_connecting ||
 					 (!conn->proxy && stream_rsize(&conn->rws) > 0) ||
 					 (conn->proxy && stream_rsize(&conn->proxy->ws) > 0));
+				is_closing = conn->status == cs_closing ||
+					conn->status == cs_rsp_closing;
 				if (is_local_sending)
 					FD_SET(conn->sock, &writeset);
-				else if(!is_remote_sending)
+				/* read when request header is not complete,
+				   or remote connection established and not sending data */
+				else if(!is_closing &&
+					(!conn->mode || (is_remote_connected && !is_remote_sending)))
 					FD_SET(conn->sock, &readset);
 				FD_SET(conn->sock, &errorset);
 
-				if (conn->rsock > 0) {
+				if (!is_closing && conn->rsock > 0) {
 					max_fd = MAX(max_fd, conn->rsock);
 					if (is_remote_sending)
 						FD_SET(conn->rsock, &writeset);
@@ -2274,7 +2320,11 @@ static int do_loop()
 
 				if (!running) break;
 
-				if (!r && is_expired(conn, now)) {
+				if (!r && conn->status == cs_closing) {
+					r = -1;
+					remove_dnscache(conn);
+				}
+				else if (!r && is_expired(conn, now)) {
 					logd("timeout - %s\n", get_sockname(conn->sock));
 					r = -1;
 					if (conn->rrx == 0) {
