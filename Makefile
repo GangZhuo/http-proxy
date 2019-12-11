@@ -8,7 +8,7 @@ OBJS = src/log.o \
 	   rbtree/rbtree.c
 
 CFLAGS += -DASYN_DNS
-LDFLAGS += -lcares
+MY_LIBS += -lcares
 
 ifneq ($(debug), 0)
     CFLAGS += -g -DDEBUG -D_DEBUG
@@ -18,7 +18,7 @@ endif
 all: http-proxy
 
 http-proxy: src/main.o $(OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(LIBS) $(MY_LIBS)
 
 %.o: %.c
 	$(CC) -o $@ -c $< $(CFLAGS)
