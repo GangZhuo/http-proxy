@@ -730,7 +730,7 @@ Options:\n\
   -t TIMEOUT               Timeout (seconds), default: " XSTR(DEFAULT_TIMEOUT) ".");
 #ifdef ASYN_DNS
 	printf("%s\n", "\
-  --dns-server=DNS_SERVER  DNS servers, e.g. 192.168.1.1:53,8.8.8.8");
+  --dns-server=DNS_SERVER  DNS servers, e.g. 192.168.1.1:53,8.8.8.8.");
 #endif
 	printf("%s\n", "\
   --dns-timeout=TIMEOUT    DNS cache timeout (seconds), default: " XSTR(DEFAULT_DNS_TIMEOUT) ".\n\
