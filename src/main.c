@@ -10,9 +10,42 @@
 #include <inttypes.h>
 
 #ifdef WINDOWS
+
 #include "../windows/win.h"
 typedef SOCKET sock_t;
+
+#ifdef ASYN_DNS
+
+/* c-ares (https://c-ares.haxx.se/).
+   Can build from c-ares source,
+   ref https://github.com/c-ares/c-ares/blob/master/INSTALL.md#msvc-from-command-line. */
+
+#ifdef WIN64
+
+#include "../windows/c-ares/x64/include/ares.h"
+
+#ifdef NDEBUG
+#pragma comment(lib,"../windows/c-ares/x64/lib/cares.lib")
 #else
+#pragma comment(lib,"../windows/c-ares/x64/lib/caresd.lib")
+#endif
+
+#else /* else WIN64 */
+
+#include "../windows/c-ares/x86/include/ares.h"
+
+#ifdef NDEBUG
+#pragma comment(lib,"../windows/c-ares/x86/lib/cares.lib")
+#else
+#pragma comment(lib,"../windows/c-ares/x86/lib/caresd.lib")
+#endif
+
+#endif /* endif WIN64 */
+
+#endif /* endif ASYN_DNS */
+
+#else /* else WINDOWS */
+
 #include <signal.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -27,9 +60,15 @@ typedef SOCKET sock_t;
 #include <netinet/in.h>
 #include <syslog.h>
 #include <netdb.h>
+
+#ifdef ASYN_DNS
+#include <ares.h>
+#endif
+
 typedef int sock_t;
 #define strnicmp strncasecmp
-#endif
+
+#endif  /* endif WINDOWS */
 
 
 #include "log.h"
@@ -90,10 +129,29 @@ typedef int sock_t;
 
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
-typedef struct sockaddr_t {
+typedef struct sockaddr_t sockaddr_t;
+typedef struct conn_t conn_t;
+
+typedef void (*got_addr_callback)(sockaddr_t* addr, int hit_cache, conn_t* conn,
+	const char* host, const char* port);
+
+#ifdef ASYN_DNS
+typedef struct a_state_t {
+	sockaddr_t* addr;
+	char* host;
+	char* port;
+	conn_t* conn;
+	got_addr_callback cb;
+	int af_inet;
+	int af_inet6;
+	int is_conn_destroyed;
+} a_state_t;
+#endif
+
+struct sockaddr_t {
 	struct sockaddr_storage addr;
 	int addrlen;
-} sockaddr_t;
+};
 
 typedef struct listen_t {
 	sockaddr_t addr;
@@ -131,7 +189,7 @@ typedef struct proxy_ctx {
 	stream_t ws; /* write stream */
 } proxy_ctx;
 
-typedef struct conn_t {
+struct conn_t {
 	listen_t* listen;
 	sock_t sock;
 	sock_t rsock; /* remote sock */
@@ -157,7 +215,10 @@ typedef struct conn_t {
 	uint64_t tx; /* transmit bytes */
 	uint64_t rrx; /* remote receive bytes */
 	uint64_t rtx; /* remote transmit bytes */
-} conn_t;
+#ifdef ASYN_DNS
+	a_state_t* a_state;
+#endif
+};
 
 static char* listen_addr = NULL;
 static char* listen_port = NULL;
@@ -190,6 +251,12 @@ static void ServiceMain(int argc, char** argv);
 static void ControlHandler(DWORD request);
 #define strdup(s) _strdup(s)
 
+#endif
+
+#ifdef ASYN_DNS
+static ares_channel a_channel = NULL;
+static struct ares_options a_options = { 0 };
+static char* dns_servers = NULL;
 #endif
 
 #define get_addrport(a) \
@@ -332,6 +399,178 @@ static void close_syslog()
 	}
 #endif
 }
+
+#ifdef ASYN_DNS
+
+static int init_ares()
+{
+	int rc, optmask = 0;
+
+	rc = ares_library_init(ARES_LIB_INIT_ALL);
+	if (rc != ARES_SUCCESS) {
+		loge("ares_library_init: %s\n", ares_strerror(rc));
+		return -1;
+	}
+
+	rc = ares_init_options(&a_channel, &a_options, optmask);
+	if (rc != ARES_SUCCESS) {
+		loge("ares_init_options: %s\n", ares_strerror(rc));
+		return -1;
+	}
+
+	return 0;
+}
+
+static void free_ares()
+{
+	ares_destroy(a_channel);
+	ares_library_cleanup();
+}
+
+static void a_print_servers()
+{
+	int r;
+	struct ares_addr_port_node* nodes = NULL, *n;
+	char ip[INET6_ADDRSTRLEN];
+
+	logn("c-ares dns servers:\n");
+	r = ares_get_servers_ports(a_channel, &nodes);
+	if (nodes && r == ARES_SUCCESS) {
+		n = nodes;
+		while (n) {
+			inet_ntop(n->family, &n->addr, ip, sizeof(ip));
+			logn("  %s:udp%d,tcp%d\n",
+				ip,
+				n->udp_port ? n->udp_port : 53,
+				n->tcp_port ? n->tcp_port : 53);
+			n = n->next;
+		}
+	}
+	if (nodes)
+		ares_free_data(nodes);
+}
+
+static a_state_t* a_new_state(sockaddr_t* addr, char* host, char* port,
+	conn_t* conn, got_addr_callback cb)
+{
+	a_state_t* st = (a_state_t*)malloc(sizeof(a_state_t));
+	if (!st)
+		return NULL;
+	memset(st, 0, sizeof(a_state_t));
+	st->addr = addr;
+	st->host = strdup(host);
+	st->port = strdup(port);
+	st->conn = conn;
+	st->cb = cb;
+	return st;
+}
+
+static void a_free_state(a_state_t* st)
+{
+	if (st) {
+		if (st->conn) {
+			st->conn->a_state = NULL;
+		}
+		free(st->host);
+		free(st->port);
+		free(st);
+	}
+}
+
+static void a_get_addr_st(a_state_t* st, int family);
+
+static void a_callback(void* arg, int status, int timeouts, struct hostent* host)
+{
+	a_state_t* st = (a_state_t*)arg;
+	char ip[INET6_ADDRSTRLEN];
+	int i = 0;
+	sockaddr_t* addr = NULL;
+	struct sockaddr_in* addr_in;
+	struct sockaddr_in6* addr_in6;
+	struct in_addr* in;
+	struct in6_addr* in6;
+
+	if (host && status == ARES_SUCCESS) {
+		logd("Found address name %s\n", host->h_name);
+		for (i = 0; host->h_addr_list[i]; ++i) {
+			inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip));
+			logi("%s\n", ip);
+			if (!addr) {
+				switch (host->h_addrtype) {
+				case AF_INET:
+					addr = st->addr;
+					in = (struct in_addr*)host->h_addr_list[i];
+					addr_in = (struct sockaddr_in*)(&addr->addr);
+					addr->addrlen = sizeof(struct sockaddr_in);
+					addr_in->sin_family = AF_INET;
+					addr_in->sin_port = htons(atoi(st->port));
+					memcpy(&addr_in->sin_addr, in, sizeof(struct in_addr));
+					break;
+				case AF_INET6:
+					addr = st->addr;
+					in6 = (struct in6_addr*)host->h_addr_list[i];
+					addr_in6 = (struct sockaddr_in6*)(&addr->addr);
+					addr->addrlen = sizeof(struct sockaddr_in6);
+					addr_in6->sin6_family = AF_INET6;
+					addr_in6->sin6_port = htons(atoi(st->port));
+					memcpy(&addr_in6->sin6_addr, in6, sizeof(struct in6_addr));
+					break;
+				}
+			}
+		}
+	}
+
+	if (!addr) {
+		loge("Failed to lookup %s\n", ares_strerror(status));
+		if (!st->af_inet6)
+			a_get_addr_st(st, AF_INET6);
+		else if (!st->af_inet)
+			a_get_addr_st(st, AF_INET);
+		else {
+			if (!st->is_conn_destroyed && st->conn) {
+				(*st->cb)(NULL, FALSE, st->conn, st->host, st->port);
+			}
+			a_free_state(st);
+		}
+		return;
+	}
+	else {
+		if (dns_timeout > 0) {
+			if (dnscache_add(st->host, (char*)addr, sizeof(sockaddr_t))) {
+				logw("a_callback() error: add dns cache failed - %s\n", host);
+			}
+		}
+		if (!st->is_conn_destroyed && st->conn) {
+			(*st->cb)(addr, FALSE, st->conn, st->host, st->port);
+		}
+		a_free_state(st);
+		return;
+	}
+}
+
+static void a_get_addr_st(a_state_t *st, int family)
+{
+	st->af_inet = family == AF_INET;
+	st->af_inet6 = family == AF_INET6;
+	
+	ares_gethostbyname(a_channel, st->host, family, a_callback, st);
+}
+
+static int a_get_addr(sockaddr_t* addr, char *host, char *port,
+	conn_t* conn, got_addr_callback cb)
+{
+	a_state_t* st = a_new_state(addr, host, port, conn, cb);
+	if (!st) {
+		loge("a_get_addr() failed: a_new_state() failed: alloc");
+		return -1;
+	}
+
+	a_get_addr_st(st, AF_INET);
+
+	return 0;
+}
+
+#endif
 
 /* is connect self */
 static int is_self(sockaddr_t *addr)
@@ -627,7 +866,12 @@ static void print_args()
 
 	if (dns_timeout > 0)
 		logn("dns cache timeout: %d\n", dns_timeout);
-	}
+
+#ifdef ASYN_DNS
+	a_print_servers();
+#endif
+	logn("\n");
+}
 
 static void parse_option(char* ln, char** option, char** name, char** value)
 {
@@ -791,7 +1035,7 @@ static int parse_addrstr(char* s, char** host, char** port)
 			*p = '\0';
 			p++;
 			if (*p == ':')
-				* port = p + 1;
+				*port = p + 1;
 			else
 				*port = NULL;
 			return 0;
@@ -821,16 +1065,6 @@ static int host2addr(sockaddr_t* addr, const char* host, const char* port)
 	struct addrinfo* addrinfo;
 	int r;
 
-	if (dns_timeout > 0 && dnscache_get(host, (char*)addr)) {
-		if (addr->addr.ss_family == AF_INET)
-			((struct sockaddr_in*)(&addr->addr))->sin_port = htons((uint16_t)atoi(port));
-		else
-			((struct sockaddr_in6*)(&addr->addr))->sin6_port = htons((uint16_t)atoi(port));
-		logd("host2addr(): hit dns cache - %s - %s:%s \n",
-			get_sockaddrname(addr), host, port);
-		return 0;
-	}
-
 	memset(&hints, 0, sizeof(hints));
 
 	hints.ai_family = ipv6_prefer ? AF_INET6 : AF_INET;
@@ -854,15 +1088,7 @@ static int host2addr(sockaddr_t* addr, const char* host, const char* port)
 
 	freeaddrinfo(addrinfo);
 
-	if (dns_timeout > 0) {
-		if (dnscache_add(host, (char*)addr, sizeof(sockaddr_t))) {
-			loge("host2addr() error: add dns cache failed - %s\n", host);
-			return -1;
-		}
-	}
-
 	return 0;
-
 }
 
 static int str2addr(
@@ -1028,6 +1254,12 @@ static void free_conn(conn_t* conn)
 {
 	if (conn == NULL)
 		return;
+#ifdef ASYN_DNS
+	if (conn->a_state) {
+		conn->a_state->is_conn_destroyed = TRUE;
+		conn->a_state->conn = NULL;
+	}
+#endif
 	if (conn->sock) {
 		close(conn->sock);
 		conn->sock = 0;
@@ -1115,6 +1347,13 @@ static int init_proxy_server()
 		}
 	}
 
+#ifdef ASYN_DNS
+
+	if (init_ares() != 0)
+		return -1;
+
+#endif
+
 	return 0;
 }
 
@@ -1174,6 +1413,12 @@ static void uninit_proxy_server()
 	}
 
 	dnscache_free();
+
+#ifdef ASYN_DNS
+
+	free_ares();
+
+#endif
 }
 
 static int try_parse_as_ip4(sockaddr_t* addr, const char* host, const char* port)
@@ -1302,29 +1547,79 @@ static int get_host_and_port(char** host, char** port,
 	return 0;
 }
 
-static int get_remote_addr(sockaddr_t* addr, const conn_t* conn)
+static int get_remote_host_and_port(char** host, char** port, const conn_t* conn)
 {
 	if (conn->mode == pm_tunnel) {
-		if (str2addr(conn->url.array, addr, "80")) {
-			loge("get_remote_addr() error: resolve \"%s\" failed\n", conn->url.array);
+		char* copy = strdup(conn->url.array), *h, *p;
+
+		if (parse_addrstr(copy, &h, &p)) {
+			free(copy);
 			return -1;
 		}
+
+		*host = strdup(h);
+
+		if (!p || strlen(p) == 0)
+			*port = strdup("80");
+		else
+			*port = strdup(p);
+
+		free(copy);
 	}
 	else {
-		char* host, * port;
-		if (get_host_and_port(&host, &port, conn->url.array, conn->url.size, 0)) {
-			loge("get_remote_addr() error: parse \"%s\" failed\n", conn->url.array);
+		if (get_host_and_port(host, port, conn->url.array, conn->url.size, 0)) {
 			return -1;
 		}
-		if (host2addr(addr, host, port)) {
-			loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
-			free(host);
-			free(port);
-			return -1;
-		}
+	}
+	return 0;
+}
+
+static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
+{
+	char* host, * port;
+	if (get_remote_host_and_port(&host, &port, conn)) {
+		loge("get_remote_addr() error: parse \"%s\" failed\n", conn->url.array);
+		return -1;
+	}
+
+	if (dns_timeout > 0 && dnscache_get(host, (char*)addr)) {
+		if (addr->addr.ss_family == AF_INET)
+			((struct sockaddr_in*)(&addr->addr))->sin_port = htons((uint16_t)atoi(port));
+		else
+			((struct sockaddr_in6*)(&addr->addr))->sin6_port = htons((uint16_t)atoi(port));
+		logd("get_remote_addr(): hit dns cache - %s - %s:%s \n",
+			get_sockaddrname(addr), host, port);
+		(*cb)(addr, TRUE, conn, host, port);
+		return 0;
+	}
+
+#ifdef ASYN_DNS
+	if (a_get_addr(addr, host, port, conn, cb)) {
+		loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
 		free(host);
 		free(port);
+		return -1;
 	}
+#else
+	if (host2addr(addr, host, port)) {
+		loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
+		free(host);
+		free(port);
+		return -1;
+	}
+
+	if (dns_timeout > 0) {
+		if (dnscache_add(host, (char*)addr, sizeof(sockaddr_t))) {
+			logw("on_got_remote_addr() error: add dns cache failed - %s\n", host);
+		}
+	}
+
+	(*cb)(addr, FALSE, conn, host, port);
+#endif
+
+	free(host);
+	free(port);
+
 	return 0;
 }
 
@@ -1801,7 +2096,8 @@ static int by_proxy(conn_t* conn)
 	return TRUE;
 }
 
-static void on_got_remote_addr(sockaddr_t* addr, conn_t* conn)
+static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
+	const char* host, const char* port)
 {
 	int r;
 	if (!addr) {
@@ -1809,6 +2105,11 @@ static void on_got_remote_addr(sockaddr_t* addr, conn_t* conn)
 		bad_request(conn);
 		return;
 	}
+
+	logd("on_got_remote_addr(): %s%s - %s:%s\n",
+		get_sockaddrname(addr),
+		hit_cache ? " (cache)" : "",
+		host, port);
 
 	if (is_self(addr)) {
 		logw("on_got_remote_addr() error: dead loop %s\n", conn->url.array);
@@ -1840,12 +2141,10 @@ static int connect_remote(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	if (get_remote_addr(addr, conn)) {
+	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
 		return bad_request(conn);
 	}
-
-	on_got_remote_addr(addr, conn);
 
 	return 0;
 }
@@ -2176,7 +2475,12 @@ static int do_loop()
 		FD_ZERO(&writeset);
 		FD_ZERO(&errorset);
 
+
+#ifdef ASYN_DNS
+		max_fd = ares_fds(a_channel, &readset, &writeset);
+#else
 		max_fd = 0;
+#endif
 
 		for (i = 0; i < listen_num; i++) {
 			listen_t* listen = listens + i;
@@ -2243,6 +2547,10 @@ static int do_loop()
 		if (!running) break;
 
 		now = time(NULL);
+
+#ifdef ASYN_DNS
+		ares_process(a_channel, &readset, &writeset);
+#endif
 
 		for (i = 0; i < listen_num; i++) {
 			listen_t* listen = listens + i;
