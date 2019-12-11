@@ -7,6 +7,8 @@ OBJS = src/log.o \
 	   http-parser/http_parser.o \
 	   rbtree/rbtree.c
 
+CFLAGS += -DASYN_DNS
+
 ifneq ($(debug), 0)
     CFLAGS += -g -DDEBUG -D_DEBUG
     LDFLAGS += -g
