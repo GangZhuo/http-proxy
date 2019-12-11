@@ -254,9 +254,9 @@ static void ControlHandler(DWORD request);
 #endif
 
 #ifdef ASYN_DNS
+static char* dns_server = NULL;
 static ares_channel a_channel = NULL;
 static struct ares_options a_options = { 0 };
-static char* dns_servers = NULL;
 #endif
 
 #define get_addrport(a) \
@@ -416,6 +416,14 @@ static int init_ares()
 	if (rc != ARES_SUCCESS) {
 		loge("ares_init_options: %s\n", ares_strerror(rc));
 		return -1;
+	}
+
+	if (dns_server) {
+		rc = ares_set_servers_ports_csv(a_channel, dns_server);
+		if (rc != ARES_SUCCESS) {
+			loge("ares_set_servers_ports_csv: %s\n", ares_strerror(rc));
+			return -1;
+		}
 	}
 
 	return 0;
@@ -693,8 +701,8 @@ static char* get_sockname(sock_t sock)
 
 static void usage()
 {
-  printf("%s\n", "\n"
-PROGRAM_NAME " " PROGRAM_VERSION "\n\
+	printf("%s\n", "\n"
+		PROGRAM_NAME " " PROGRAM_VERSION "\n\
 \n\
 Usage:\n\
 \n\
@@ -719,7 +727,12 @@ Options:\n\
                            e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
   -p BIND_PORT             Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
                            The port specified in \"-b\" is priority .\n\
-  -t TIMEOUT               Timeout (seconds), default: " XSTR(DEFAULT_TIMEOUT) ".\n\
+  -t TIMEOUT               Timeout (seconds), default: " XSTR(DEFAULT_TIMEOUT) ".");
+#ifdef ASYN_DNS
+	printf("%s\n", "\
+  --dns-server=DNS_SERVER  DNS servers, e.g. 192.168.1.1:53,8.8.8.8");
+#endif
+	printf("%s\n", "\
   --dns-timeout=TIMEOUT    DNS cache timeout (seconds), default: " XSTR(DEFAULT_DNS_TIMEOUT) ".\n\
                            0 mean no cache.\n\
   --daemon                 Daemonize.\n\
@@ -757,6 +770,7 @@ static int parse_args(int argc, char** argv)
 		{"chnroute",   required_argument, NULL, 8},
 		{"ipv6-prefer",no_argument,       NULL, 9},
 		{"dns-timeout",required_argument, NULL, 10},
+		{"dns-server", required_argument, NULL, 11},
 		{0, 0, 0, 0}
 	};
 
@@ -791,6 +805,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 10:
 			dns_timeout = atoi(optarg);
+			break;
+		case 11:
+			dns_server = strdup(optarg);
 			break;
 		case 'h':
 			usage();
@@ -1001,17 +1018,23 @@ static int read_config_file(const char* config_file, int force)
 			}
 		}
 		else if (strcmp(name, "ipv6_prefer") == 0 && strlen(value)) {
-		if (force || !ipv6_prefer) {
-			ipv6_prefer = is_true_val(value);
-		}
+			if (force || !ipv6_prefer) {
+				ipv6_prefer = is_true_val(value);
+			}
 		}
 		else if (strcmp(name, "dns_timeout") == 0 && strlen(value)) {
-		if (force || dns_timeout == -1) {
-			dns_timeout = atoi(value);
+			if (force || dns_timeout == -1) {
+				dns_timeout = atoi(value);
+			}
 		}
+		else if (strcmp(name, "dns_server") == 0 && strlen(value)) {
+			if (force || !dns_server) {
+				if (dns_server) free(dns_server);
+				dns_server = strdup(value);
+			}
 		}
 		else {
-		/*do nothing*/
+			/*do nothing*/
 		}
 	}
 
