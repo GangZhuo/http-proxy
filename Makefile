@@ -8,6 +8,7 @@ OBJS = src/log.o \
 	   rbtree/rbtree.c
 
 CFLAGS += -DASYN_DNS
+LDFLAGS += -lcares
 
 ifneq ($(debug), 0)
     CFLAGS += -g -DDEBUG -D_DEBUG
