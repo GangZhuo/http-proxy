@@ -14,17 +14,19 @@
 extern "C" {
 #endif
 
-int chnroute_init();
+typedef void* chnroute_ctx;
 
-void chnroute_free();
+chnroute_ctx chnroute_create();
 
-int chnroute_test4(struct in_addr* ip);
+void chnroute_free(chnroute_ctx ctx);
 
-int chnroute_test6(struct in6_addr* ip);
+int chnroute_test4(chnroute_ctx ctx, struct in_addr* ip);
 
-int chnroute_test(struct sockaddr* addr);
+int chnroute_test6(chnroute_ctx ctx, struct in6_addr* ip);
 
-int chnroute_parse(const char* filename);
+int chnroute_test(chnroute_ctx ctx, struct sockaddr* addr);
+
+int chnroute_parse(chnroute_ctx ctx, const char* filename);
 
 #ifdef __cplusplus
 }

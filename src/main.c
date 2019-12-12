@@ -241,6 +241,7 @@ static listen_t listens[MAX_LISTEN] = { 0 };
 static int listen_num = 0;
 static dllist_t conns = DLLIST_INIT(conns);
 static sockaddr_t proxy_addr = { 0 };
+static chnroute_ctx chnr = NULL;
 
 #ifdef WINDOWS
 
@@ -1361,11 +1362,11 @@ static int init_proxy_server()
 	}
 
 	if (chnroute) {
-		if (chnroute_init()) {
-			loge("init_proxy_server() error: chnroute_init()\n", proxy);
+		if ((chnr = chnroute_create()) == NULL) {
+			loge("init_proxy_server() error: chnroute_create()\n");
 			return -1;
 		}
-		if (chnroute_parse(chnroute)) {
+		if (chnroute_parse(chnr, chnroute)) {
 			loge("init_proxy_server() error: invalid chnroute \"%s\"\n", chnroute);
 			return -1;
 		}
@@ -1430,11 +1431,11 @@ static void uninit_proxy_server()
 	free(config_file);
 	config_file = NULL;
 
-	if (chnroute) {
-		chnroute_free();
-		free(chnroute);
-		chnroute = NULL;
-	}
+	chnroute_free(chnr);
+	chnr = NULL;
+
+	free(chnroute);
+	chnroute = NULL;
 
 	dnscache_free();
 
@@ -2148,9 +2149,9 @@ static int by_proxy(conn_t* conn)
 	if (proxy == NULL || !(*proxy))
 		return FALSE;
 
-	if (chnroute) {
+	if (chnr) {
 		struct sockaddr* addr = (struct sockaddr*)&conn->raddr.addr;
-		if (chnroute_test(addr))
+		if (chnroute_test(chnr, addr))
 			return FALSE;
 	}
 

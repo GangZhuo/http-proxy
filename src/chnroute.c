@@ -55,8 +55,6 @@ typedef struct chnroute_list_t {
 	int net6_num;
 } chnroute_list_t;
 
-static net_list_t chnroute_list = { 0 };
-
 static int is_ipv6(const char* ip)
 {
 	return !!strchr(ip, ':');
@@ -84,9 +82,9 @@ static int cmp_net_mask6(const void* a, const void* b)
 	return 0;
 }
 
-int chnroute_test4(struct in_addr* ip)
+int chnroute_test4(chnroute_ctx ctx, struct in_addr* ip)
 {
-	net_list_t* netlist = &chnroute_list;
+	net_list_t* netlist = ctx;
 	int l = 0, r = netlist->entries - 1;
 	int m, cmp;
 	net_mask_t ip_net;
@@ -117,9 +115,9 @@ int chnroute_test4(struct in_addr* ip)
 	return TRUE;
 }
 
-int chnroute_test6(struct in6_addr* ip)
+int chnroute_test6(chnroute_ctx ctx, struct in6_addr* ip)
 {
-	net_list_t* netlist = &chnroute_list;
+	net_list_t* netlist = ctx;
 	int l = 0, r = netlist->entries6 - 1;
 	int m, cmp;
 	int i;
@@ -156,13 +154,13 @@ int chnroute_test6(struct in6_addr* ip)
 	return TRUE;
 }
 
-int chnroute_test(struct sockaddr* addr)
+int chnroute_test(chnroute_ctx ctx, struct sockaddr* addr)
 {
 	if (addr->sa_family == AF_INET) {
-		return chnroute_test4(&((struct sockaddr_in*)addr)->sin_addr);
+		return chnroute_test4(ctx, &((struct sockaddr_in*)addr)->sin_addr);
 	}
 	else if (addr->sa_family == AF_INET6) {
-		return chnroute_test6(&((struct sockaddr_in6*)addr)->sin6_addr);
+		return chnroute_test6(ctx, &((struct sockaddr_in6*)addr)->sin6_addr);
 	}
 	else {
 		return FALSE;
@@ -310,11 +308,10 @@ static int parse_chnroute_file(chnroute_list_t* list, const char* filename)
 	return 0;
 }
 
-static int feedback_net_list(chnroute_list_t* list)
+static int feedback_net_list(chnroute_ctx ctx, chnroute_list_t* list)
 {
-	net_list_t* netlist;
+	net_list_t* netlist = ctx;
 
-	netlist = &chnroute_list;
 	netlist->entries = 0;
 	netlist->entries6 = 0;
 
@@ -352,7 +349,7 @@ static int feedback_net_list(chnroute_list_t* list)
 	return 0;
 }
 
-int chnroute_parse(const char* filename)
+int chnroute_parse(chnroute_ctx ctx, const char* filename)
 {
 	char* s, * p;
 	int r;
@@ -377,22 +374,28 @@ int chnroute_parse(const char* filename)
 
 	free(s);
 
-	r = feedback_net_list(&list);
+	r = feedback_net_list(ctx, &list);
 
 	free_chnroute_list(&list.items);
 
 	return r;
 }
 
-int chnroute_init()
+chnroute_ctx chnroute_create()
 {
-	memset(&chnroute_list, 0, sizeof(net_list_t));
-	return 0;
+	net_list_t* netlist = (net_list_t*)malloc(sizeof(net_list_t));
+	if (!netlist)
+		return NULL;
+	memset(netlist, 0, sizeof(net_list_t));
+	return netlist;
 }
 
-void chnroute_free()
+void chnroute_free(chnroute_ctx ctx)
 {
-	free(chnroute_list.nets);
-	free(chnroute_list.nets6);
-	memset(&chnroute_list, 0, sizeof(net_list_t));
+	if (ctx) {
+		net_list_t* netlist = ctx;
+		free(netlist->nets);
+		free(netlist->nets6);
+		free(netlist);
+	}
 }
