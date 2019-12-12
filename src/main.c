@@ -232,6 +232,7 @@ static char* proxy = NULL;
 static char* chnroute = NULL;
 static int ipv6_prefer = 0;
 static int dns_timeout = -1;
+static char* forbidden_file = NULL;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -242,6 +243,7 @@ static int listen_num = 0;
 static dllist_t conns = DLLIST_INIT(conns);
 static sockaddr_t proxy_addr = { 0 };
 static chnroute_ctx chnr = NULL;
+static chnroute_ctx forb = NULL;
 
 #ifdef WINDOWS
 
@@ -583,7 +585,7 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 
 #endif
 
-static int is_forbidden(sockaddr_t *addr)
+static int is_self(sockaddr_t* addr)
 {
 	int i, num = listen_num;
 	listen_t* listen;
@@ -592,7 +594,7 @@ static int is_forbidden(sockaddr_t *addr)
 		listen = listens + i;
 		if (listen->addr.addr.ss_family == addr->addr.ss_family &&
 			get_addrport(&(listen->addr)) == get_addrport(addr)) {
-			
+
 			if (addr->addr.ss_family == AF_INET) {
 				struct sockaddr_in* x = (struct sockaddr_in*)(&addr->addr);
 				struct sockaddr_in* y = (struct sockaddr_in*)(&listen->addr.addr);
@@ -606,6 +608,17 @@ static int is_forbidden(sockaddr_t *addr)
 					return TRUE;
 			}
 		}
+	}
+
+}
+
+static int is_forbidden(sockaddr_t *addr)
+{
+	struct sockaddr* saddr = (struct sockaddr*) & addr->addr;
+
+	if (forb) {
+		if (chnroute_test(forb, saddr))
+			return TRUE;
 	}
 
 	return FALSE;
@@ -746,6 +759,8 @@ Options:\n\
                            https://github.com/GangZhuo/http-proxy.\n\
   --chnroute=CHNROUTE_FILE Path to china route file, \n\
                            e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.\n\
+  --forbidden=FORBIDDEN_FILE Path to forbidden route file, \n\
+                           e.g.: --forbidden=self.txt,youtube.txt.\n\
   --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080\n\
                            or --proxy=[::1]:1080.\n\
                            Only socks5 with no authentication is supported.\n\
@@ -773,6 +788,7 @@ static int parse_args(int argc, char** argv)
 		{"ipv6-prefer",no_argument,       NULL, 9},
 		{"dns-timeout",required_argument, NULL, 10},
 		{"dns-server", required_argument, NULL, 11},
+		{"forbidden",  required_argument, NULL, 12},
 		{0, 0, 0, 0}
 	};
 
@@ -810,6 +826,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 11:
 			dns_server = strdup(optarg);
+			break;
+		case 12:
+			forbidden_file = strdup(optarg);
 			break;
 		case 'h':
 			usage();
@@ -876,6 +895,9 @@ static void print_args()
 
 	if (chnroute)
 		logn("chnroute: %s\n", chnroute);
+
+	if (forbidden_file)
+		logn("forbidden: %s\n", forbidden_file);
 
 	if (proxy)
 		logn("proxy: %s\n", proxy);
@@ -1033,6 +1055,12 @@ static int read_config_file(const char* config_file, int force)
 			if (force || !dns_server) {
 				if (dns_server) free(dns_server);
 				dns_server = strdup(value);
+			}
+		}
+		else if (strcmp(name, "forbidden") == 0 && strlen(value)) {
+			if (force || !forbidden_file) {
+				if (forbidden_file) free(forbidden_file);
+				forbidden_file = strdup(value);
 			}
 		}
 		else {
@@ -1372,6 +1400,17 @@ static int init_proxy_server()
 		}
 	}
 
+	if (forbidden_file) {
+		if ((forb = chnroute_create()) == NULL) {
+			loge("init_proxy_server() error: chnroute_create()\n");
+			return -1;
+		}
+		if (chnroute_parse(forb, forbidden_file)) {
+			loge("init_proxy_server() error: invalid chnroute \"%s\"\n", forbidden_file);
+			return -1;
+		}
+	}
+
 #ifdef ASYN_DNS
 
 	if (init_ares() != 0)
@@ -1437,11 +1476,20 @@ static void uninit_proxy_server()
 	free(chnroute);
 	chnroute = NULL;
 
+	chnroute_free(forb);
+	forb = NULL;
+
+	free(forbidden_file);
+	forbidden_file = NULL;
+
 	dnscache_free();
 
 #ifdef ASYN_DNS
 
 	free_ares();
+
+	free(dns_server);
+	dns_server = NULL;
 
 #endif
 }
