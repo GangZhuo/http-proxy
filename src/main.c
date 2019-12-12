@@ -470,6 +470,7 @@ static a_state_t* a_new_state(sockaddr_t* addr, char* host, char* port,
 	st->port = strdup(port);
 	st->conn = conn;
 	st->cb = cb;
+	logd("a_new_state()\n");
 	return st;
 }
 
@@ -482,6 +483,7 @@ static void a_free_state(a_state_t* st)
 		free(st->host);
 		free(st->port);
 		free(st);
+		logd("a_free_state()\n");
 	}
 }
 
@@ -558,8 +560,8 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 
 static void a_get_addr_st(a_state_t *st, int family)
 {
-	st->af_inet = family == AF_INET;
-	st->af_inet6 = family == AF_INET6;
+	st->af_inet = st->af_inet || family == AF_INET;
+	st->af_inet6 = st->af_inet6 || family == AF_INET6;
 	
 	ares_gethostbyname(a_channel, st->host, family, a_callback, st);
 }
@@ -573,7 +575,7 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 		return -1;
 	}
 
-	a_get_addr_st(st, AF_INET);
+	a_get_addr_st(st, ipv6_prefer ? AF_INET6 : AF_INET);
 
 	return 0;
 }
@@ -2034,26 +2036,63 @@ static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 	return 0;
 }
 
-static int bad_request(conn_t* conn)
+static int create_response(conn_t* conn,
+	int http_code,
+	const char *name,
+	const char *content)
 {
 	stream_t* s = &conn->ws;
 	http_parser* parser = &conn->parser;
+	int content_size = 0;
+	if (content)
+		content_size = strlen(content);
 	stream_reset(s);
 	if (stream_appendf(s,
-		"HTTP/%d.%d 400 Bad Request\r\n"
+		"HTTP/%d.%d %d %s\r\n"
 		"Content-Type: text/html; charset=utf-8\r\n"
 		"Connection: close\r\n"
-		"Content-Length: 11\r\n"
+		"Content-Length: %d\r\n"
 		"\r\n"
-		"Bad Request",
+		"%s",
 		parser->http_major,
-		parser->http_minor) == -1) {
-		loge("connect_target() error: stream_appendf()");
-		conn->status = cs_closing;
+		parser->http_minor,
+		http_code,
+		name,
+		content_size,
+		content ? content : "") == -1) {
+		loge("create_response() error: stream_appendf()");
 		return -1;
 	}
-	conn->status = cs_rsp_closing;
 	return 0;
+}
+
+static int bad_request(conn_t* conn)
+{
+	int r = create_response(conn, 400, "Bad Request", "Bad Request");
+	if (r) conn->status = cs_closing;
+	else conn->status = cs_rsp_closing;
+	return r;
+}
+
+static int not_found(conn_t* conn)
+{
+	int r = create_response(conn, 404, "Not Found", "Not Found");
+	if (r) conn->status = cs_closing;
+	else conn->status = cs_rsp_closing;
+	return r;
+}
+
+static int internal_server_error(conn_t* conn)
+{
+	int r = create_response(conn, 500, "Internal Server Error", "Internal Server Error");
+	if (r) conn->status = cs_closing;
+	else conn->status = cs_rsp_closing;
+	return r;
+}
+
+static void close_conn(conn_t* conn)
+{
+	conn->status = cs_closing;
 }
 
 static int connect_target(conn_t* conn)
@@ -2125,7 +2164,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	int r;
 	if (!addr) {
 		loge("on_got_remote_addr() error: get remote address failed %s\n", conn->url.array);
-		bad_request(conn);
+		close_conn(conn);
 		return;
 	}
 
@@ -2146,7 +2185,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		r = connect_proxy(conn);
 		if (r != 0) {
 			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
-			bad_request(conn);
+			internal_server_error(conn);
 			return;
 		}
 	}
@@ -2154,7 +2193,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		r = connect_target(conn);
 		if (r != 0) {
 			logw("on_got_remote_addr() error: connect remote failed %s\n", conn->url.array);
-			bad_request(conn);
+			close_conn(conn);
 			return;
 		}
 	}
@@ -2166,7 +2205,8 @@ static int connect_remote(conn_t* conn)
 
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
-		return bad_request(conn);
+		not_found(conn);
+		return -1;
 	}
 
 	return 0;
@@ -2624,6 +2664,10 @@ static int do_loop()
 						r = -1;
 						if (err == WSAETIMEDOUT || err == ETIMEDOUT) {
 							remove_dnscache(conn);
+						}
+						if (conn->proxy) {
+							internal_server_error(conn);
+							r = 0;
 						}
 					}
 					else if (FD_ISSET(conn->rsock, &writeset)) {
