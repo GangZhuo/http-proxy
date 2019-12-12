@@ -106,6 +106,8 @@ Options:
                            https://github.com/GangZhuo/http-proxy.
   --chnroute=CHNROUTE_FILE Path to china route file,
                            e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.
+  --forbidden=FORBIDDEN_FILE Path to forbidden route file,
+                           e.g.: --forbidden=self.txt,youtube.txt.
   --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080
                            or --proxy=[::1]:1080.
                            Only socks5 with no authentication is supported.
