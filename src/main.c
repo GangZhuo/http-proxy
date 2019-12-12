@@ -582,8 +582,7 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 
 #endif
 
-/* is connect self */
-static int is_self(sockaddr_t *addr)
+static int is_forbidden(sockaddr_t *addr)
 {
 	int i, num = listen_num;
 	listen_t* listen;
@@ -2066,9 +2065,9 @@ static int create_response(conn_t* conn,
 	return 0;
 }
 
-static int bad_request(conn_t* conn)
+static int forbidden(conn_t* conn)
 {
-	int r = create_response(conn, 400, "Bad Request", "Bad Request");
+	int r = create_response(conn, 403, "Forbidden", "Forbidden");
 	if (r) conn->status = cs_closing;
 	else conn->status = cs_rsp_closing;
 	return r;
@@ -2082,9 +2081,9 @@ static int not_found(conn_t* conn)
 	return r;
 }
 
-static int internal_server_error(conn_t* conn)
+static int invalid_proxy(conn_t* conn)
 {
-	int r = create_response(conn, 500, "Internal Server Error", "Internal Server Error");
+	int r = create_response(conn, 500, "Internal Server Error", "Invalid Proxy");
 	if (r) conn->status = cs_closing;
 	else conn->status = cs_rsp_closing;
 	return r;
@@ -2173,9 +2172,9 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		hit_cache ? " (cache)" : "",
 		host, port);
 
-	if (is_self(addr)) {
+	if (is_forbidden(addr)) {
 		logw("on_got_remote_addr() error: dead loop %s\n", conn->url.array);
-		bad_request(conn);
+		forbidden(conn);
 		return;
 	}
 
@@ -2185,7 +2184,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		r = connect_proxy(conn);
 		if (r != 0) {
 			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
-			internal_server_error(conn);
+			invalid_proxy(conn);
 			return;
 		}
 	}
@@ -2666,7 +2665,7 @@ static int do_loop()
 							remove_dnscache(conn);
 						}
 						if (conn->proxy) {
-							internal_server_error(conn);
+							invalid_proxy(conn);
 							r = 0;
 						}
 					}
