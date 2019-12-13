@@ -13,6 +13,8 @@ Note:
 ### Linux
 
 ```bash
+sudo apt-get install build-essential libc-ares-dev
+
 git clone https://github.com/GangZhuo/http-proxy.git
 
 git submodule init
