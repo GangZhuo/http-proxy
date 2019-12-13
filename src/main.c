@@ -148,6 +148,14 @@ typedef struct a_state_t {
 } a_state_t;
 #endif
 
+typedef struct ip_t {
+	int family; /* AF_INET or AF_INET6 */
+	union {
+		struct in_addr ip4;
+		struct in6_addr ip6;
+	} ip;
+} ip_t;
+
 struct sockaddr_t {
 	struct sockaddr_storage addr;
 	int addrlen;
@@ -244,6 +252,8 @@ static dllist_t conns = DLLIST_INIT(conns);
 static sockaddr_t proxy_addr = { 0 };
 static chnroute_ctx chnr = NULL;
 static chnroute_ctx forb = NULL;
+static ip_t* local_ips = NULL;
+static int local_ip_cnt = 0;
 
 #ifdef WINDOWS
 
@@ -443,6 +453,7 @@ static void a_print_servers()
 	int r;
 	struct ares_addr_port_node* nodes = NULL, *n;
 	char ip[INET6_ADDRSTRLEN];
+	int idx = 0;
 
 	logn("c-ares dns servers:\n");
 	r = ares_get_servers_ports(a_channel, &nodes);
@@ -450,7 +461,8 @@ static void a_print_servers()
 		n = nodes;
 		while (n) {
 			inet_ntop(n->family, &n->addr, ip, sizeof(ip));
-			logn("  %s:udp%d,tcp%d\n",
+			logn("  %d. %s:udp%d,tcp%d\n",
+				++idx,
 				ip,
 				n->udp_port ? n->udp_port : 53,
 				n->tcp_port ? n->tcp_port : 53);
@@ -585,36 +597,104 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 
 #endif
 
+static int is_same_ip(ip_t *ip, struct sockaddr* addr)
+{
+	if (ip->family == addr->sa_family) {
+		if (ip->family == AF_INET) {
+			return memcmp(
+				&ip->ip.ip4,
+				&((struct sockaddr_in*)addr)->sin_addr,
+				4) == 0;
+		}
+		else if (ip->family == AF_INET6) {
+			return memcmp(
+				&ip->ip.ip4,
+				&((struct sockaddr_in6*)addr)->sin6_addr,
+				16) == 0;
+		}
+	}
+
+	return FALSE;
+}
+
+static int is_same_ip2(struct sockaddr* addr1, struct sockaddr* addr2)
+{
+	if (addr1->sa_family == addr2->sa_family) {
+		if (addr1->sa_family == AF_INET) {
+			return memcmp(
+				&((struct sockaddr_in*)addr1)->sin_addr,
+				&((struct sockaddr_in*)addr2)->sin_addr,
+				4) == 0;
+		}
+		else if (addr1->sa_family == AF_INET6) {
+			return memcmp(
+				&((struct sockaddr_in6*)addr1)->sin6_addr,
+				&((struct sockaddr_in6*)addr2)->sin6_addr,
+				16) == 0;
+		}
+	}
+
+	return FALSE;
+}
+
+static int is_any_addr(struct sockaddr* addr)
+{
+	ip_t any = {
+		.family = addr->sa_family
+	};
+	return is_same_ip(&any, addr);
+}
+
+static int is_local_ip(struct sockaddr* target_addr)
+{
+	int i;
+
+	if (local_ip_cnt == 0)
+		return FALSE;
+
+	for (i = 0; i < local_ip_cnt; i++) {
+		if (is_same_ip(local_ips + i, target_addr))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
 static int is_self(sockaddr_t* addr)
 {
 	int i, num = listen_num;
 	listen_t* listen;
+	struct sockaddr* listen_addr;
+	struct sockaddr* target_addr = (struct sockaddr*) & addr->addr;
 
 	for (i = 0; i < num; i++) {
 		listen = listens + i;
 		if (listen->addr.addr.ss_family == addr->addr.ss_family &&
 			get_addrport(&(listen->addr)) == get_addrport(addr)) {
+			
+			listen_addr = (struct sockaddr*) & listen->addr.addr;
+			
+			if (is_any_addr(listen_addr)) {
+				if (is_local_ip(target_addr))
+					return TRUE;
+			}
+			else {
+				if (is_same_ip2(listen_addr, target_addr))
+					return TRUE;
+			}
 
-			if (addr->addr.ss_family == AF_INET) {
-				struct sockaddr_in* x = (struct sockaddr_in*)(&addr->addr);
-				struct sockaddr_in* y = (struct sockaddr_in*)(&listen->addr.addr);
-				if (memcmp(&x->sin_addr, &y->sin_addr, 4) == 0)
-					return TRUE;
-			}
-			else if (addr->addr.ss_family == AF_INET6) {
-				struct sockaddr_in6* x = (struct sockaddr_in6*)(&addr->addr);
-				struct sockaddr_in6* y = (struct sockaddr_in6*)(&listen->addr.addr);
-				if (memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0)
-					return TRUE;
-			}
 		}
 	}
 
+	return FALSE;
 }
 
 static int is_forbidden(sockaddr_t *addr)
 {
 	struct sockaddr* saddr = (struct sockaddr*) & addr->addr;
+
+	if (is_self(addr))
+		return TRUE;
 
 	if (forb) {
 		if (chnroute_test(forb, saddr))
@@ -658,6 +738,13 @@ static int getsockerr(sock_t sock)
 	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&err, &len) < 0)
 		return errno;
 	return err;
+}
+
+static char* get_ipname(int family, void* addr)
+{
+	static char sip[INET6_ADDRSTRLEN];
+	inet_ntop(family, addr, sip, sizeof(sip));
+	return sip;
 }
 
 static char* get_addrname(struct sockaddr* addr)
@@ -712,6 +799,155 @@ static char* get_sockname(sock_t sock)
 		return buffer;
 	}
 	return NULL;
+}
+
+static int get_all_ips_by_name(ip_t** list, const char *host_name)
+{
+	struct addrinfo hints;
+	struct addrinfo* addrinfo, * p;
+	ip_t* ip;
+	int r;
+
+	memset(&hints, 0, sizeof(hints));
+
+	r = getaddrinfo(host_name, 0, &hints, &addrinfo);
+
+	if (r != 0)
+	{
+		loge("get_all_ips_by_name() error: retval=%d %s %s\n",
+			r, gai_strerror(r), host_name);
+		return -1;
+	}
+
+	p = addrinfo;
+	r = 0;
+
+	while (p) {
+		r++;
+		p = p->ai_next;
+	}
+
+	ip = (ip_t*)malloc(sizeof(ip_t) * r);
+	if (!ip) {
+		loge("get_all_ips_by_name() error: alloc\n");
+		freeaddrinfo(addrinfo);
+		return -1;
+	}
+
+	*list = ip;
+
+	memset(ip, 0, sizeof(ip_t) * r);
+
+	p = addrinfo;
+
+	r = 0;
+	while (p) {
+
+		ip->family = p->ai_addr->sa_family;
+		if (ip->family == AF_INET) {
+			memcpy(&ip->ip.ip4,
+				&((struct sockaddr_in*)p->ai_addr)->sin_addr, 4);
+			r++;
+			ip++;
+		}
+		else if (ip->family == AF_INET6) {
+			memcpy(&ip->ip.ip6,
+				&((struct sockaddr_in6*)p->ai_addr)->sin6_addr, 16);
+			r++;
+			ip++;
+		}
+
+		p = p->ai_next;
+	}
+
+	freeaddrinfo(addrinfo);
+
+	return r;
+}
+
+static int get_lo_ips(ip_t** list)
+{
+	return get_all_ips_by_name(list, "localhost");
+}
+
+static int get_if_ips(ip_t** list)
+{
+	char host_name[255];
+
+	if (gethostname(host_name, sizeof(host_name))) {
+		loge("get_if_ips(): failed to get host name: errno=%d, %s\n",
+			errno, strerror(errno));
+		return -1;
+	}
+
+	return get_all_ips_by_name(list, host_name);
+}
+
+static int combin_iplist(ip_t** all,
+	ip_t *list0, int list0_cnt,
+	ip_t *list1, int list1_cnt)
+{
+	int cnt = list0_cnt + list1_cnt;
+	ip_t *list = (ip_t*)malloc(sizeof(ip_t) * cnt);
+
+	if (!list) {
+		loge("combin_iplist(): alloc\n");
+		return -1;
+	}
+
+	memcpy(list, list0, sizeof(ip_t) * list0_cnt);
+	memcpy(list + list0_cnt, list1, sizeof(ip_t) * list1_cnt);
+
+	*all = list;
+
+	return cnt;
+}
+
+static void print_local_ips(ip_t* list, int cnt)
+{
+	char* name;
+	int i;
+
+	if (cnt == 0)
+		return;
+
+	logd("local ip list: \n");
+	for (i = 0; i < cnt; i++) {
+		name = get_ipname(list[i].family, &list[i].ip);
+		logd("  %d. %s\n", i + 1, name);
+	}
+}
+
+static int get_local_ips(ip_t** list)
+{
+	ip_t* localhost_ips = NULL, *if_ips = NULL;
+	int localhost_ip_cnt = 0, if_ips_cnt = 0, cnt = 0;
+
+	localhost_ip_cnt = get_lo_ips(&localhost_ips);
+
+	if (localhost_ip_cnt < 0) {
+		return -1;
+	}
+
+	if_ips_cnt = get_if_ips(&if_ips);
+
+	if (if_ips_cnt < 0) {
+		free(localhost_ips);
+		return -1;
+	}
+	
+	cnt = combin_iplist(list,
+		localhost_ips, localhost_ip_cnt,
+		if_ips, if_ips_cnt);
+
+	free(localhost_ips);
+	free(if_ips);
+
+	if (cnt < 0) {
+		return -1;
+	}
+
+	return cnt;
 }
 
 static void usage()
@@ -911,6 +1147,11 @@ static void print_args()
 #ifdef ASYN_DNS
 	a_print_servers();
 #endif
+
+#ifdef _DEBUG
+	print_local_ips(local_ips, local_ip_cnt);
+#endif
+
 	logn("\n");
 }
 
@@ -1418,6 +1659,8 @@ static int init_proxy_server()
 
 #endif
 
+	local_ip_cnt = get_local_ips(&local_ips);
+
 	return 0;
 }
 
@@ -1481,6 +1724,10 @@ static void uninit_proxy_server()
 
 	free(forbidden_file);
 	forbidden_file = NULL;
+
+	local_ip_cnt = 0;
+	free(local_ips);
+	local_ips = NULL;
 
 	dnscache_free();
 
