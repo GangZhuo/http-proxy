@@ -907,6 +907,44 @@ static int combin_iplist(ip_t** all,
 	return cnt;
 }
 
+static int iplist_exists(ip_t* list, int cnt, ip_t *ip)
+{
+	int i, sz;
+	ip_t* p;
+
+	for (i = 0; i < cnt; i++) {
+		p = list + i;
+		if (p->family == ip->family) {
+			if (p->family == AF_INET)
+				sz = 4;
+			else if (p->family == AF_INET6)
+				sz = 16;
+			else
+				return TRUE;
+			if (memcmp(&p->ip, &ip->ip, sz) == 0)
+				return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+static int iplist_rm_dup(ip_t *list, int cnt)
+{
+	int i, n = 0;
+
+	for (i = 0; i < cnt; i++) {
+		if (!iplist_exists(list, n, list + i)) {
+			if (n != i) {
+				memcpy(list + n, list + i, sizeof(ip_t));
+			}
+			n++;
+		}
+	}
+
+	return n;
+}
+
 static void print_local_ips(ip_t* list, int cnt)
 {
 	char* name;
@@ -950,6 +988,8 @@ static int get_local_ips(ip_t** list)
 	if (cnt < 0) {
 		return -1;
 	}
+
+	cnt = iplist_rm_dup(*list, cnt);
 
 	return cnt;
 }
