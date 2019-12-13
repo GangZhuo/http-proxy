@@ -1661,6 +1661,11 @@ static int init_proxy_server()
 
 	local_ip_cnt = get_local_ips(&local_ips);
 
+	if (local_ip_cnt < 0) {
+		loge("init_proxy_server() error: get_local_ips()\n");
+		return -1;
+	}
+
 	return 0;
 }
 
