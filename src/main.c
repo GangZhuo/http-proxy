@@ -880,6 +880,10 @@ static int get_if_ips(ip_t** list)
 		return -1;
 	}
 
+#ifdef _DEBUG
+	logd("host name: %s\n", host_name);
+#endif
+
 	return get_all_ips_by_name(list, host_name);
 }
 
