@@ -9,6 +9,7 @@ jobs:
     
     steps:
     - uses: actions/checkout@v1
+    - name: checkout submodules
       run: git submodule update --init --recursive
     - name: make
       run: make
