@@ -9,6 +9,8 @@ jobs:
     
     steps:
     - uses: actions/checkout@v1
+    - name: install c-ares
+      run: sudo apt-get install -y libc-ares-dev
     - name: checkout submodules
       run: git submodule update --init --recursive
     - name: make
