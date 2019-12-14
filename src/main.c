@@ -457,7 +457,7 @@ static void a_print_servers()
 	char ip[INET6_ADDRSTRLEN];
 	int idx = 0;
 
-	logn("c-ares dns servers:\n");
+	logn("c-ares dns servers (c-ares v%s):\n", ares_version(NULL));
 	r = ares_get_servers_ports(a_channel, &nodes);
 	if (nodes && r == ARES_SUCCESS) {
 		n = nodes;
