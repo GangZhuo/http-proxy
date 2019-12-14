@@ -89,9 +89,18 @@ typedef int sock_t;
 #define DEFAULT_TIMEOUT 30
 #define DEFAULT_DNS_TIMEOUT 600 /* 10 minutes */
 #define LISTEN_BACKLOG	128
+#ifndef MAX_LISTEN
 #define MAX_LISTEN 8
+#endif
+#ifndef BUF_SIZE
 #define BUF_SIZE 4096
+#endif
+#ifndef MAX_HEADER_SIZE
 #define MAX_HEADER_SIZE (1024 * 1024) /* 1MB */
+#endif
+#ifndef MAX_PROXY
+#define MAX_PROXY 8
+#endif
 
 #define MAX(a, b) (((a) < (b)) ? (b) : (a))
 #define _XSTR(x) #x  
@@ -129,6 +138,10 @@ typedef int sock_t;
 #define EAI_ADDRFAMILY EAI_NODATA
 #endif
 
+#define ERR_CREATE_SOCKET -1
+#define ERR_SET_NONBLOCK  -2
+#define ERR_CONNECT		  -3
+
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
 typedef struct sockaddr_t sockaddr_t;
@@ -164,6 +177,11 @@ struct sockaddr_t {
 	int addrlen;
 };
 
+typedef struct proxy_t {
+	sockaddr_t addr;
+	int proxy_index;
+} proxy_t;
+
 typedef struct listen_t {
 	sockaddr_t addr;
 	sock_t sock;
@@ -196,7 +214,7 @@ typedef enum proxy_status {
 } proxy_status;
 
 typedef struct proxy_ctx {
-	sockaddr_t* addr;
+	int proxy_index;
 	proxy_status status;
 	stream_t ws; /* write stream */
 } proxy_ctx;
@@ -253,7 +271,8 @@ static const char* current_log_file = NULL;
 static listen_t listens[MAX_LISTEN] = { 0 };
 static int listen_num = 0;
 static dllist_t conns = DLLIST_INIT(conns);
-static sockaddr_t proxy_addr = { 0 };
+static proxy_t proxy_list[MAX_PROXY] = { 0 };
+static int proxy_num = 0;
 static chnroute_ctx chnr = NULL;
 static chnroute_ctx forb = NULL;
 static ip_t* local_ips = NULL;
@@ -280,6 +299,17 @@ static struct ares_options a_options = { 0 };
 	((a)->addr.ss_family == AF_INET ? \
 		((struct sockaddr_in*)(&((a)->addr)))->sin_port :\
 		((struct sockaddr_in6*)(&((a)->addr)))->sin6_port)
+
+#define get_proxyinfo(index) \
+	(proxy_list + (index))
+
+#define get_proxyname(index) \
+	get_sockaddrname(&get_proxyinfo(index)->addr)
+
+#define get_conn_proxyname(conn) \
+	get_sockaddrname(&get_proxyinfo((conn)->proxy->proxy_index)->addr)
+
+static int connect_proxy(int proxy_index, conn_t* conn);
 
 static char* ltrim(char* s)
 {
@@ -1735,6 +1765,8 @@ static inline int is_expired(conn_t* conn, time_t now)
 
 static int init_proxy_server()
 {
+	int i;
+
 	if (log_file) {
 		open_logfile(log_file);
 	}
@@ -1766,9 +1798,21 @@ static int init_proxy_server()
 	if (init_listens() != 0)
 		return -1;
 
-	if (proxy && str2addr(proxy, &proxy_addr, "1080")) {
-		loge("init_proxy_server() error: invalid proxy \"%s\"\n", proxy);
-		return -1;
+	if (proxy) {
+		proxy_num = resolve_addrstr(
+			proxy,
+			&proxy_list[0].addr,
+			MAX_PROXY,
+			sizeof(proxy_t),
+			"1080");
+		if (proxy_num == -1) {
+			loge("init_proxy_server() error: resolve \"%s\" failed\n",
+				proxy);
+			return -1;
+		}
+		for (i = 0; i < proxy_num; i++) {
+			proxy_list[i].proxy_index = i;
+		}
 	}
 
 	if (chnroute) {
@@ -1876,6 +1920,8 @@ static void uninit_proxy_server()
 	local_ips = NULL;
 
 	dnscache_free();
+
+	proxy_num = 0;
 
 #ifdef ASYN_DNS
 
@@ -2267,7 +2313,7 @@ static int proxy_write(conn_t* conn)
 	if (nsend == 0)
 		return 0;
 
-	logd("proxy_write(): write to %s\n", get_sockaddrname(conn->proxy->addr));
+	logd("proxy_write(): write to %s\n", get_conn_proxyname(conn));
 
 	update_expire(conn);
 
@@ -2439,21 +2485,23 @@ static int on_header_value(http_parser* parser, const char* at, size_t length)
 
 static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 {
-	sock_t sock;
+	sock_t sock = *psock;
 
-	sock = socket(addr->addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+	if (sock == 0) {
+		sock = socket(addr->addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
 
-	if (!sock) {
-		loge("connect_addr() error: create socket error. errno=%d, %s - %s\n",
-			errno, strerror(errno), get_sockaddrname(addr));
-		return -1;
-	}
+		if (!sock) {
+			loge("connect_addr() error: create socket error. errno=%d, %s - %s\n",
+				errno, strerror(errno), get_sockaddrname(addr));
+			return ERR_CREATE_SOCKET;
+		}
 
-	if (setnonblock(sock) != 0) {
-		loge("connect_addr() error: set sock non-block failed - %s\n",
-			get_sockaddrname(addr));
-		close(sock);
-		return -1;
+		if (setnonblock(sock) != 0) {
+			loge("connect_addr() error: set sock non-block failed - %s\n",
+				get_sockaddrname(addr));
+			close(sock);
+			return ERR_SET_NONBLOCK;
+		}
 	}
 
 	if (connect(sock, (struct sockaddr*)(&addr->addr), addr->addrlen) != 0) {
@@ -2461,8 +2509,11 @@ static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 		if (!is_eagain(err)) {
 			loge("connect_addr() error: errno=%d, %s - %s\n",
 				errno, strerror(errno), get_sockaddrname(addr));
-			close(sock);
-			return -1;
+			if (sock != *psock) {
+				logd("connect_addr(): close sock");
+				close(sock);
+			}
+			return ERR_CONNECT;
 		}
 		else {
 			*pstatus = cs_connecting;
@@ -2507,7 +2558,7 @@ static int create_response(conn_t* conn,
 	return 0;
 }
 
-static int forbidden(conn_t* conn)
+static int response_forbidden(conn_t* conn)
 {
 	int r = create_response(conn, 403, "Forbidden", "Forbidden");
 	if (r) conn->status = cs_closing;
@@ -2515,7 +2566,7 @@ static int forbidden(conn_t* conn)
 	return r;
 }
 
-static int not_found(conn_t* conn)
+static int response_not_found(conn_t* conn)
 {
 	int r = create_response(conn, 404, "Not Found", "Not Found");
 	if (r) conn->status = cs_closing;
@@ -2523,7 +2574,7 @@ static int not_found(conn_t* conn)
 	return r;
 }
 
-static int invalid_proxy(conn_t* conn)
+static int response_500(conn_t* conn)
 {
 	int r = create_response(conn, 500, "Internal Server Error", "Invalid Proxy");
 	if (r) conn->status = cs_closing;
@@ -2557,27 +2608,55 @@ static int connect_target(conn_t* conn)
 	return 0;
 }
 
-static sockaddr_t* select_proxy(conn_t* conn)
+static int select_proxy(conn_t* conn)
 {
-	return &proxy_addr;
+	if (proxy_num > 0)
+		return 0;
+	return -1;
 }
 
-static int connect_proxy(sockaddr_t* proxy_addr, conn_t* conn)
+static int on_connect_proxy_failed(conn_t* conn)
 {
+	int new_proxy_index = conn->proxy->proxy_index + 1;
+	if (new_proxy_index < proxy_num) {
+		logd("fail connect proxy %s, switch to %s\n",
+			get_conn_proxyname(conn),
+			get_proxyname(new_proxy_index));
+		return connect_proxy(new_proxy_index, conn);
+	}
+	return -1;
+}
+
+static int connect_proxy(int proxy_index, conn_t* conn)
+{
+	int r;
+
 	logi("proxy connect %s - %s\n",
 		get_sockaddrname(&conn->raddr),
 		conn->url.array);
 
 	conn->by_proxy = TRUE;
-	conn->proxy = (proxy_ctx*)malloc(sizeof(proxy_ctx));
-	if (!conn->proxy)
-		return -1;
+
+	if (conn->proxy) {
+		stream_free(&conn->proxy->ws);
+	}
+	else {
+		conn->proxy = (proxy_ctx*)malloc(sizeof(proxy_ctx));
+		if (!conn->proxy)
+			return -1;
+	}
 
 	memset(conn->proxy, 0, sizeof(proxy_ctx));
 
-	conn->proxy->addr = proxy_addr;
+	conn->proxy->proxy_index = proxy_index;
 
-	if (connect_addr(proxy_addr, &conn->rsock, &conn->status)) {
+	if ((r = connect_addr(
+		&get_proxyinfo(proxy_index)->addr,
+		&conn->rsock,
+		&conn->status)) != 0) {
+		if (r == ERR_CONNECT) {
+			return on_connect_proxy_failed(conn);
+		}
 		return -1;
 	}
 
@@ -2592,7 +2671,7 @@ static int connect_proxy(sockaddr_t* proxy_addr, conn_t* conn)
 
 static int by_proxy(conn_t* conn)
 {
-	if (proxy == NULL || !(*proxy))
+	if (proxy_num == 0)
 		return FALSE;
 
 	if (chnr) {
@@ -2608,7 +2687,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	const char* host, const char* port)
 {
 	int r;
-	sockaddr_t* proxy_addr;
+	int proxy_index;
 
 	if (!addr) {
 		loge("on_got_remote_addr() error: get remote address failed %s\n", conn->url.array);
@@ -2623,17 +2702,17 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 
 	if (is_forbidden(addr)) {
 		logw("on_got_remote_addr() error: dead loop %s\n", conn->url.array);
-		forbidden(conn);
+		close_conn(conn);
 		return;
 	}
 
 	conn->by_proxy = by_proxy(conn);
 
-	if (conn->by_proxy && (proxy_addr = select_proxy(conn))) {
-		r = connect_proxy(proxy_addr, conn);
+	if (conn->by_proxy && (proxy_index = select_proxy(conn)) >= 0) {
+		r = connect_proxy(proxy_index, conn);
 		if (r != 0) {
 			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
-			invalid_proxy(conn);
+			close_conn(conn);
 			return;
 		}
 	}
@@ -2653,7 +2732,7 @@ static int connect_remote(conn_t* conn)
 
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
-		not_found(conn);
+		close_conn(conn);
 		return -1;
 	}
 
@@ -2920,8 +2999,7 @@ static int proxy_recv(conn_t* conn)
 	if (nread == 0)
 		return 0;
 
-	logd("proxy_recv(): recv from %s\n",
-		get_sockaddrname(conn->proxy->addr));
+	logd("proxy_recv(): recv from %s\n", get_conn_proxyname(conn));
 
 	switch (conn->proxy->status) {
 	case ps_handshake0:
@@ -3115,8 +3193,7 @@ static int do_loop()
 							remove_dnscache(conn);
 						}
 						if (conn->proxy) {
-							invalid_proxy(conn);
-							r = 0;
+							r = on_connect_proxy_failed(conn);
 						}
 					}
 					else if (FD_ISSET(conn->rsock, &writeset)) {
