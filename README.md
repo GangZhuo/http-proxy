@@ -111,7 +111,9 @@ Options:
   --forbidden=FORBIDDEN_FILE Path to forbidden route file,
                            e.g.: --forbidden=self.txt,youtube.txt.
   --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080
-                           or --proxy=[::1]:1080.
+                           or --proxy=[::1]:1080. More than one proxy is supported,
+                           in the case, if first proxy is unconnectable, it is
+                           automatic to switch to next proxy.
                            Only socks5 with no authentication is supported.
   --ipv6-prefer            IPv6 preferential.
   -v                       Verbose logging.
