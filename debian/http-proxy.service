@@ -1,0 +1,17 @@
+[Unit]
+Description=http-proxy
+Documentation=https://github.com/GangZhuo/http-proxy
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+WorkingDirectory=/tmp
+ExecStart=/usr/local/bin/http-proxy --config=/etc/http-proxy/http-proxy.config --daemon --pid=/var/run/http-proxy.pid
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
