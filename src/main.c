@@ -519,10 +519,24 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 	struct in6_addr* in6;
 
 	if (host && status == ARES_SUCCESS) {
-		logd("Found address name %s\n", host->h_name);
+		stream_t s = STREAM_INIT();
+		if (loglevel >= LOG_DEBUG) {
+			stream_writef(&s, "a_callback() %s records for %s: ",
+				st->cur_family == AF_INET ? "A" : "AAAA",
+				host->h_name);
+		}
 		for (i = 0; host->h_addr_list[i]; ++i) {
-			logd("  %s\n",
-				inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip)));
+			if (loglevel >= LOG_DEBUG) {
+				stream_appendf(
+					&s,
+					"%s%s",
+					i > 0 ? "," : "",
+					inet_ntop(
+						host->h_addrtype,
+						host->h_addr_list[i],
+						ip,
+						sizeof(ip)));
+			}
 			if (!addr) {
 				switch (host->h_addrtype) {
 				case AF_INET:
@@ -546,10 +560,14 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 				}
 			}
 		}
+		if (loglevel >= LOG_DEBUG) {
+			logd("%s\n", s.array);
+			stream_free(&s);
+		}
 	}
 
 	if (!addr) {
-		loge("Failed to lookup %s record for %s (repeat %d times): %s\n",
+		loge("a_callback(): failed to lookup %s record for %s (repeat %d times): %s\n",
 			st->cur_family == AF_INET ? "A" : "AAAA",
 			st->host,
 			timeouts,
@@ -568,8 +586,8 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 	}
 	else {
 		if (dns_timeout > 0) {
-			if (dnscache_add(st->host, (char*)addr, sizeof(sockaddr_t))) {
-				logw("a_callback() error: add dns cache failed - %s\n", st->host);
+			if (dnscache_set(st->host, (char*)addr, sizeof(sockaddr_t))) {
+				logw("a_callback() error: set dns cache failed - %s\n", st->host);
 			}
 		}
 		if (!st->is_conn_destroyed && st->conn) {
@@ -2056,8 +2074,8 @@ static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
 	}
 
 	if (dns_timeout > 0) {
-		if (dnscache_add(host, (char*)addr, sizeof(sockaddr_t))) {
-			logw("on_got_remote_addr() error: add dns cache failed - %s\n", host);
+		if (dnscache_set(host, (char*)addr, sizeof(sockaddr_t))) {
+			logw("on_got_remote_addr() error: set dns cache failed - %s\n", host);
 		}
 	}
 
@@ -2086,7 +2104,7 @@ static int remove_dnscache(conn_t* conn)
 			return -1;
 		}
 		if (dnscache_remove(host)) {
-			loge("remove_dnscache() error: remove \"%s\" failed\n", host);
+			logd("remove_dnscache() error: remove \"%s\" failed\n", host);
 			free(copy);
 			return -1;
 		}
@@ -2099,7 +2117,7 @@ static int remove_dnscache(conn_t* conn)
 			return -1;
 		}
 		if (dnscache_remove(host)) {
-			loge("remove_dnscache() error: remove \"%s\" failed\n", host);
+			logd("remove_dnscache() error: remove \"%s\" failed\n", host);
 			free(host);
 			free(port);
 			return -1;
@@ -3122,7 +3140,7 @@ static int do_loop()
 					remove_dnscache(conn);
 				}
 				else if (!r && is_expired(conn, now)) {
-					logd("timeout - %s\n", get_sockname(conn->sock));
+					logd("connection timeout - %s\n", get_sockname(conn->sock));
 					r = -1;
 					if (conn->rrx == 0) {
 						remove_dnscache(conn);

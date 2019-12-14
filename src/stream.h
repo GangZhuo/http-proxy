@@ -66,6 +66,12 @@ int stream_appendf(stream_t* stream, const char* fmt, ...);
 void bprint(char *data, int len);
 
 /* int stream_writee(stream_t *stream, void *p, int elementsize, int elementnumber) */
+/*
+write elements.
+  p  - array
+  sz - element size in bytes
+  n  - element count
+*/
 #define stream_writee(s, p, sz, n) \
 	stream_write((s), (p), (sz) * (n))
 
@@ -79,7 +85,7 @@ void bprint(char *data, int len);
 	stream_writei((s), (v), 1)
 
 #define stream_writestr(s, str) \
-	stream_writei((s), (str), strlen(str))
+	stream_writes((s), (str), strlen(str))
 
 #define stream_seti16(s, p, v) \
 	stream_seti((s), (p), (v), 2)

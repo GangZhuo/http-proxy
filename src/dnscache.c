@@ -28,6 +28,29 @@ static struct rbtree_t tree = { 0 };
 static struct dllist_t list = { 0 };
 static int timeout = 10 * 60; /* 10 minutes */
 
+static int update_item(item_t* item, const char* data, int datalen)
+{
+	char* buf;
+
+	buf = (char*)realloc(item->data, datalen);
+	if (!buf) {
+		loge("update_item() error: realloc\n");
+		return -1;
+	}
+
+	memcpy(buf, data, datalen);
+
+	item->data = buf;
+	item->datalen = datalen;
+
+	if (timeout > 0)
+		item->expire = time(NULL) + timeout;
+	else
+		item->expire = 0;
+
+	return 0;
+}
+
 static item_t* new_item(const char *domain, const char *data, int datalen)
 {
 	item_t* item = (item_t*)malloc(sizeof(item_t));
@@ -45,19 +68,12 @@ static item_t* new_item(const char *domain, const char *data, int datalen)
 		return NULL;
 	}
 
-	item->data = (char*)malloc(datalen);
-	if (!item->data) {
-		loge("new_item() error: alloc\n");
+	if (update_item(item, data, datalen)) {
+		loge("new_item() error: update_item()\n");
 		free(item->node.key);
 		free(item);
 		return NULL;
 	}
-
-	memcpy(item->data, data, datalen);
-
-	item->datalen = datalen;
-
-	item->expire = time(NULL) + timeout;
 
 	return item;
 }
@@ -65,7 +81,10 @@ static item_t* new_item(const char *domain, const char *data, int datalen)
 static void free_item(item_t *item)
 {
 	free(item->node.key);
+	item->node.key = NULL;
+
 	free(item->data);
+	item->data = NULL;
 }
 
 static void destroy_item(item_t* item)
@@ -108,22 +127,63 @@ int dnscache_add(const char* domain, const char* data, int datalen)
 {
 	item_t* item;
 
-	if (timeout <= 0) {
-		loge("dnscache_add() error: no 'dns cache timeout'\n");
-		return -1;
-	}
-
 	item = new_item(domain, data, datalen);
 
 	if (!item) return -1;
 
 	if (rbtree_insert(&tree, &item->node)) {
-		loge("dnscache_add() error: domain exists - %s\n", domain);
+		logd("dnscache_add() error: domain exists - %s\n", domain);
 		destroy_item(item);
 		return -1;
 	}
 
 	dllist_add(&list, &item->entry);
+
+	return 0;
+}
+
+static int dnscache_update_node(struct rbnode_t* node, const char* data, int datalen)
+{
+	item_t* item;
+
+	item = rbtree_container_of(node, item_t, node);
+
+	if (update_item(item, data, datalen)) {
+		loge("dnscache_update_node() error: update_item()\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+int dnscache_update(const char* domain, const char* data, int datalen)
+{
+	struct rbnode_t* n;
+
+	n = rbtree_lookup(&tree, (void*)domain);
+
+	if (!n) {
+		logd("dnscache_update() error: not exists - %s\n", domain);
+		return -1;
+	}
+
+	return dnscache_update_node(n, data, datalen);
+}
+
+int dnscache_set(const char* domain, const char* data, int datalen)
+{
+	struct rbnode_t* n;
+
+	n = rbtree_lookup(&tree, (void*)domain);
+
+	if (n) {
+		logd("dnscache_set(): update dns cache - %s\n", domain);
+		return dnscache_update_node(n, data, datalen);
+	}
+	else {
+		logd("dnscache_set(): add dns cache - %s\n", domain);
+		return dnscache_add(domain, data, datalen);
+	}
 
 	return 0;
 }
@@ -136,7 +196,7 @@ int dnscache_remove(const char* domain)
 	n = rbtree_lookup(&tree, (void*)domain);
 
 	if (!n) {
-		loge("dnscache_remove() error: not exists - %s\n", domain);
+		logd("dnscache_remove() error: not exists - %s\n", domain);
 		return -1;
 	}
 
@@ -170,7 +230,8 @@ void dnscache_check_expire(time_t now)
 	dlitem_t* cur, * nxt;
 	item_t* item;
 	dllist_foreach(&list, cur, nxt, item_t, item, entry) {
-		if (item->expire <= now) {
+		if (item->expire > 0 && item->expire <= now) {
+			logd("dnscache timeout - %s\n", item->node.key);
 			rbtree_remove(&tree, &item->node);
 			dllist_remove(&item->entry);
 			destroy_item(item);
