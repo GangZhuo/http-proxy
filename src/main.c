@@ -60,6 +60,8 @@ typedef SOCKET sock_t;
 #include <netinet/in.h>
 #include <syslog.h>
 #include <netdb.h>
+#include <net/if.h>
+#include <ifaddrs.h>
 
 #ifdef ASYN_DNS
 #include <ares.h>
