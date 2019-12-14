@@ -801,6 +801,23 @@ static char* get_sockname(sock_t sock)
 	return NULL;
 }
 
+static void print_local_ips(ip_t* list, int cnt)
+{
+	char* name;
+	int i;
+
+	if (cnt == 0)
+		return;
+
+	logd("local ip list: \n");
+	for (i = 0; i < cnt; i++) {
+		name = get_ipname(list[i].family, &list[i].ip);
+		logd("  %d. %s\n", i + 1, name);
+	}
+}
+
+#ifdef WINDOWS
+
 static int get_all_ips_by_name(ip_t** list, const char *host_name)
 {
 	struct addrinfo hints;
@@ -945,21 +962,6 @@ static int iplist_rm_dup(ip_t *list, int cnt)
 	return n;
 }
 
-static void print_local_ips(ip_t* list, int cnt)
-{
-	char* name;
-	int i;
-
-	if (cnt == 0)
-		return;
-
-	logd("local ip list: \n");
-	for (i = 0; i < cnt; i++) {
-		name = get_ipname(list[i].family, &list[i].ip);
-		logd("  %d. %s\n", i + 1, name);
-	}
-}
-
 static int get_local_ips(ip_t** list)
 {
 	ip_t* localhost_ips = NULL, *if_ips = NULL;
@@ -993,6 +995,74 @@ static int get_local_ips(ip_t** list)
 
 	return cnt;
 }
+
+#else /* else WINDOWS */
+
+static int get_local_ips(ip_t** list)
+{
+	struct ifaddrs* myaddrs, * ifa;
+	ip_t* ip;
+	int cnt, family;
+	void* in_addr;
+	char buf[64];
+
+	if (getifaddrs(&myaddrs) != 0)
+	{
+		loge("get_local_ips() error: errno=%d %s\n",
+			errno, strerror(errno));
+		return -1;
+	}
+
+	cnt = 0;
+	for (ifa = myaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		if (!(ifa->ifa_flags & IFF_UP))
+			continue;
+		family = ifa->ifa_addr->sa_family;
+		if (family != AF_INET && family != AF_INET6)
+			continue;
+		cnt++;
+	}
+
+	ip = (ip_t*)malloc(sizeof(ip_t) * cnt);
+	if (!ip) {
+		loge("get_local_ips() error: alloc\n");
+		freeifaddrs(myaddrs);
+		return -1;
+	}
+
+	*list = ip;
+
+	memset(ip, 0, sizeof(ip_t) * cnt);
+
+	for (ifa = myaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL)
+			continue;
+		if (!(ifa->ifa_flags & IFF_UP))
+			continue;
+		family = ifa->ifa_addr->sa_family;
+		switch (family) {
+		case AF_INET:
+			in_addr = &((struct sockaddr_in*)ifa->ifa_addr)->sin_addr;
+			break;
+		case AF_INET6:
+			in_addr = &((struct sockaddr_in6*)ifa->ifa_addr)->sin6_addr;
+			break;
+		default:
+			continue;
+		}
+		ip->family = family;
+		memcpy(&ip->ip, in_addr, family == AF_INET ? 4 : 16);
+		ip++;
+	}
+
+	freeifaddrs(myaddrs);
+
+	return cnt;
+}
+
+#endif  /* endif WINDOWS */
 
 static void usage()
 {
