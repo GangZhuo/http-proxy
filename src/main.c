@@ -146,6 +146,7 @@ typedef struct a_state_t {
 	got_addr_callback cb;
 	int af_inet;
 	int af_inet6;
+	int cur_family;
 	int is_conn_destroyed;
 } a_state_t;
 #endif
@@ -520,8 +521,8 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 	if (host && status == ARES_SUCCESS) {
 		logd("Found address name %s\n", host->h_name);
 		for (i = 0; host->h_addr_list[i]; ++i) {
-			inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip));
-			logi("%s\n", ip);
+			logd("  %s\n",
+				inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip)));
 			if (!addr) {
 				switch (host->h_addrtype) {
 				case AF_INET:
@@ -548,7 +549,11 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 	}
 
 	if (!addr) {
-		loge("Failed to lookup %s\n", ares_strerror(status));
+		loge("Failed to lookup %s record for %s (repeat %d times): %s\n",
+			st->cur_family == AF_INET ? "A" : "AAAA",
+			st->host,
+			timeouts,
+			ares_strerror(status));
 		if (!st->af_inet6)
 			a_get_addr_st(st, AF_INET6);
 		else if (!st->af_inet)
@@ -564,7 +569,7 @@ static void a_callback(void* arg, int status, int timeouts, struct hostent* host
 	else {
 		if (dns_timeout > 0) {
 			if (dnscache_add(st->host, (char*)addr, sizeof(sockaddr_t))) {
-				logw("a_callback() error: add dns cache failed - %s\n", host);
+				logw("a_callback() error: add dns cache failed - %s\n", st->host);
 			}
 		}
 		if (!st->is_conn_destroyed && st->conn) {
@@ -579,6 +584,7 @@ static void a_get_addr_st(a_state_t *st, int family)
 {
 	st->af_inet = st->af_inet || family == AF_INET;
 	st->af_inet6 = st->af_inet6 || family == AF_INET6;
+	st->cur_family = family;
 	
 	ares_gethostbyname(a_channel, st->host, family, a_callback, st);
 }
