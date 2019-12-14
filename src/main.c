@@ -196,6 +196,7 @@ typedef enum proxy_status {
 } proxy_status;
 
 typedef struct proxy_ctx {
+	sockaddr_t* addr;
 	proxy_status status;
 	stream_t ws; /* write stream */
 } proxy_ctx;
@@ -2266,7 +2267,7 @@ static int proxy_write(conn_t* conn)
 	if (nsend == 0)
 		return 0;
 
-	logd("proxy_write(): write to %s\n", get_sockaddrname(&proxy_addr));
+	logd("proxy_write(): write to %s\n", get_sockaddrname(conn->proxy->addr));
 
 	update_expire(conn);
 
@@ -2556,10 +2557,13 @@ static int connect_target(conn_t* conn)
 	return 0;
 }
 
-static int connect_proxy(conn_t* conn)
+static sockaddr_t* select_proxy(conn_t* conn)
 {
-	sockaddr_t* addr = &proxy_addr;
+	return &proxy_addr;
+}
 
+static int connect_proxy(sockaddr_t* proxy_addr, conn_t* conn)
+{
 	logi("proxy connect %s - %s\n",
 		get_sockaddrname(&conn->raddr),
 		conn->url.array);
@@ -2571,7 +2575,9 @@ static int connect_proxy(conn_t* conn)
 
 	memset(conn->proxy, 0, sizeof(proxy_ctx));
 
-	if (connect_addr(addr, &conn->rsock, &conn->status)) {
+	conn->proxy->addr = proxy_addr;
+
+	if (connect_addr(proxy_addr, &conn->rsock, &conn->status)) {
 		return -1;
 	}
 
@@ -2602,6 +2608,8 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	const char* host, const char* port)
 {
 	int r;
+	sockaddr_t* proxy_addr;
+
 	if (!addr) {
 		loge("on_got_remote_addr() error: get remote address failed %s\n", conn->url.array);
 		close_conn(conn);
@@ -2621,8 +2629,8 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 
 	conn->by_proxy = by_proxy(conn);
 
-	if (conn->by_proxy) {
-		r = connect_proxy(conn);
+	if (conn->by_proxy && (proxy_addr = select_proxy(conn))) {
+		r = connect_proxy(proxy_addr, conn);
 		if (r != 0) {
 			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
 			invalid_proxy(conn);
@@ -2912,7 +2920,8 @@ static int proxy_recv(conn_t* conn)
 	if (nread == 0)
 		return 0;
 
-	logd("proxy_recv(): recv from %s\n", get_sockaddrname(&proxy_addr));
+	logd("proxy_recv(): recv from %s\n",
+		get_sockaddrname(conn->proxy->addr));
 
 	switch (conn->proxy->status) {
 	case ps_handshake0:
