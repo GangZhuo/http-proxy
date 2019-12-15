@@ -263,6 +263,7 @@ static char* chnroute = NULL;
 static int ipv6_prefer = 0;
 static int dns_timeout = -1;
 static char* forbidden_file = NULL;
+static int reverse = 0;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -1174,6 +1175,8 @@ Options:\n\
                            automatic to switch to next proxy.\n\
                            Only socks5 with no authentication is supported.\n\
   --ipv6-prefer            IPv6 preferential.\n\
+  --reverse                Reverse. If set, then connect server by proxy, \n\
+                           when the server's IP in the chnroute.\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
   -V                       Print version and then exit.\n\
@@ -1198,6 +1201,7 @@ static int parse_args(int argc, char** argv)
 		{"dns-timeout",required_argument, NULL, 10},
 		{"dns-server", required_argument, NULL, 11},
 		{"forbidden",  required_argument, NULL, 12},
+		{"reverse",    no_argument,       NULL, 13},
 		{0, 0, 0, 0}
 	};
 
@@ -1238,6 +1242,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 12:
 			forbidden_file = strdup(optarg);
+			break;
+		case 13:
+			reverse = 1;
 			break;
 		case 'h':
 			usage();
@@ -1316,6 +1323,9 @@ static void print_args()
 
 	if (dns_timeout > 0)
 		logn("dns cache timeout: %d\n", dns_timeout);
+
+	if (reverse)
+		logn("reverse: yes\n");
 
 #ifdef ASYN_DNS
 	a_print_servers();
@@ -1475,6 +1485,11 @@ static int read_config_file(const char* config_file, int force)
 			if (force || !forbidden_file) {
 				if (forbidden_file) free(forbidden_file);
 				forbidden_file = strdup(value);
+			}
+		}
+		else if (strcmp(name, "reverse") == 0 && strlen(value)) {
+			if (force || !reverse) {
+				reverse = is_true_val(value);
 			}
 		}
 		else {
@@ -2673,16 +2688,21 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 
 static int by_proxy(conn_t* conn)
 {
+	int in_chnroute = FALSE;
+
 	if (proxy_num == 0)
 		return FALSE;
 
 	if (chnr) {
 		struct sockaddr* addr = (struct sockaddr*)&conn->raddr.addr;
 		if (chnroute_test(chnr, addr))
-			return FALSE;
+			in_chnroute = TRUE;
 	}
 
-	return TRUE;
+	if (reverse)
+		return in_chnroute;
+
+	return !in_chnroute;
 }
 
 static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,

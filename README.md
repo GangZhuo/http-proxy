@@ -116,6 +116,8 @@ Options:
                            automatic to switch to next proxy.
                            Only socks5 with no authentication is supported.
   --ipv6-prefer            IPv6 preferential.
+  --reverse                Reverse. If set, then connect server by proxy,
+                           when the server's IP in the chnroute.
   -v                       Verbose logging.
   -h                       Show this help message and exit.
   -V                       Print version and then exit.
