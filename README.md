@@ -8,6 +8,8 @@ Note:
   With "--chnroute", you should make sure that the dns resolve result is clean.
   You can use [CleanDNS], [ChinaDNS] or similar utilities to get clean dns result.
 
+### 中文使用说明：[使用说明]
+
 ## Install
 
 ### Linux
@@ -150,6 +152,7 @@ You can generate latest chnroute6.txt using this command:
     curl 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest' | \
 	grep ipv6 | grep CN | awk -F\| '{ printf("%s/%d\n", $4, $5) }' > chnroute6.txt
 
+[使用说明]: https://github.com/GangZhuo/http-proxy/wiki/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E
 [CleanDNS]:  https://github.com/GangZhuo/CleanDNS
 [ChinaDNS]:  https://github.com/shadowsocks/ChinaDNS
 [About chnroute]:  https://github.com/shadowsocks/ChinaDNS#about-chnroute
