@@ -1176,7 +1176,7 @@ Options:\n\
                            Only socks5 with no authentication is supported.\n\
   --ipv6-prefer            IPv6 preferential.\n\
   --reverse                Reverse. If set, then connect server by proxy, \n\
-                           when the server's IP in the chnroute.\
+                           when the server's IP in the chnroute.\n\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
   -V                       Print version and then exit.\n\
