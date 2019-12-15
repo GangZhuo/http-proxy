@@ -1,5 +1,17 @@
 # http-proxy
 
+http-proxy 能够把 socks5 代理转换为 http 代理，另外，可以根据 IP 段来
+决定哪些 IP 应该走 socks5，哪些 IP 应该直连。
+这对于经常从国内外服务器拉取代码的人非常有用。
+
+例如，因为一些原因，我们拉取或推送代码到 github 时，速度非常慢，因此我
+们需要配置 git 的 http(s).proxy，当我们需要拉取国内源的代码时，我们又需
+要取消 git 的 http(s).proxy 设置。
+
+通过 http-proxy 我们仅需要配置一次，然后，是否需要通过 socks5 代理，可由 http-proxy 自动决定。 
+
+更多见 [使用说明]。
+
 Http proxy. With http-proxy, you can assign a socks5 proxy as upstream proxy,
 and, use "chnroute" to by pass proxy.
 
@@ -7,8 +19,6 @@ Note:
 
   With "--chnroute", you should make sure that the dns resolve result is clean.
   You can use [CleanDNS], [ChinaDNS] or similar utilities to get clean dns result.
-
-### 中文使用说明：[使用说明]
 
 ## Install
 
