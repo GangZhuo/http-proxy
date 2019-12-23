@@ -3,6 +3,7 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
