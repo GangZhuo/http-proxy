@@ -1147,7 +1147,7 @@ Options:\n\
 \n\
   -b BIND_ADDR             Address that listens, default: " DEFAULT_LISTEN_ADDR ".\n\
                            Use comma to separate multi addresses, \n\
-                           e.g. -b 127.0.0.1:5354,[::1]:5354.\n\
+                           e.g. -b 127.0.0.1:1081,[::1]:1081.\n\
   -p BIND_PORT             Port that listen on, default: " DEFAULT_LISTEN_PORT ".\n\
                            The port specified in \"-b\" is priority .\n\
   -t TIMEOUT               Timeout (seconds), default: " XSTR(DEFAULT_TIMEOUT) ".");
