@@ -138,6 +138,10 @@ typedef int sock_t;
 #define EAI_ADDRFAMILY EAI_NODATA
 #endif
 
+#ifndef SO_EXCLUSIVEADDRUSE
+#define SO_EXCLUSIVEADDRUSE SO_REUSEADDR
+#endif
+
 #define ERR_CREATE_SOCKET -1
 #define ERR_SET_NONBLOCK  -2
 #define ERR_CONNECT		  -3
@@ -788,6 +792,18 @@ static int setnonblock(sock_t sock)
 		return -1;
 	}
 #endif
+
+	return 0;
+}
+
+static int setreuseaddr(sock_t sock)
+{
+	int opt = 1;
+
+	if (setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &opt, sizeof(opt)) != 0) {
+		loge("setsockopt() error: errno=%d, %s\n", errno, strerror(errno));
+		return -1;
+	}
 
 	return 0;
 }
@@ -1672,6 +1688,12 @@ static int init_listen(listen_t* ctx)
 
 	if (!sock) {
 		loge("init_listen() error: create socket error. errno=%d, %s\n", errno, strerror(errno));
+		return -1;
+	}
+
+	if (setreuseaddr(sock) != 0) {
+		loge("init_listen() error: set sock reuse address failed\n");
+		close(sock);
 		return -1;
 	}
 
