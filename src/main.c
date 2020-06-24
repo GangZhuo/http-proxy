@@ -520,6 +520,7 @@ static a_state_t* a_new_state(sockaddr_t* addr, char* host, char* port,
 	st->port = strdup(port);
 	st->conn = conn;
 	st->cb = cb;
+	conn->a_state = st;
 	logd("a_new_state()\n");
 	return st;
 }
@@ -647,6 +648,7 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 		loge("a_get_addr() failed: a_new_state() failed: alloc");
 		return -1;
 	}
+
 
 	a_get_addr_st(st, ipv6_prefer ? AF_INET6 : AF_INET);
 
