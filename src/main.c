@@ -58,6 +58,7 @@ typedef SOCKET sock_t;
 #include <sys/socket.h>
 #include <time.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <syslog.h>
 #include <netdb.h>
 #include <net/if.h>
