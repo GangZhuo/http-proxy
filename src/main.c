@@ -808,6 +808,18 @@ static int setreuseaddr(sock_t sock)
 	return 0;
 }
 
+static int setnodelay(sock_t sock)
+{
+	int opt = 1;
+
+	if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) != 0) {
+		loge("setsockopt() error: errno=%d, %s\n", errno, strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
 static int getsockerr(sock_t sock)
 {
 	int err = 0, len = sizeof(int);
@@ -2270,6 +2282,21 @@ static int handle_accept(listen_t* ctx)
 		return -1;
 	}
 	logd("accept() from %s\n", get_sockaddrname(&from));
+
+	if (setnonblock(sock) != 0) {
+		loge("accept() error: set sock non-block failed - errno=%d, %s\n",
+			errno, strerror(errno));
+		close(sock);
+		return -1;
+	}
+
+	if (setnodelay(sock) != 0) {
+		loge("accept() error: set sock nodelay failed - errno=%d, %s\n",
+			errno, strerror(errno));
+		close(sock);
+		return -1;
+	}
+
 	conn = new_conn(sock, ctx);
 	if (!conn) {
 		close(sock);
@@ -2539,6 +2566,13 @@ static int connect_addr(sockaddr_t* addr, sock_t *psock, conn_status *pstatus)
 
 		if (setnonblock(sock) != 0) {
 			loge("connect_addr() error: set sock non-block failed - %s\n",
+				get_sockaddrname(addr));
+			close(sock);
+			return ERR_SET_NONBLOCK;
+		}
+
+		if (setnodelay(sock) != 0) {
+			loge("connect_addr() error: set sock nodelay failed - %s\n",
 				get_sockaddrname(addr));
 			close(sock);
 			return ERR_SET_NONBLOCK;
