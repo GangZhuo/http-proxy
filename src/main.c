@@ -238,6 +238,9 @@ struct conn_t {
 	time_t expire;
 	size_t header_size;
 	stream_t url;
+	char* host; /* host from HTTP request header */
+	char* rhost; /* domain name */
+	char* rport; /* port name*/
 	int is_first_line;
 	struct {
 		stream_t name;
@@ -353,6 +356,24 @@ static char* trim_quote(char* s)
 	while (end >= start && ((*end) == '\'' || (*end) == '"')) (*(end--)) = '\0';
 
 	return start;
+}
+
+/* case insensitive */
+static int startwith(const char* s, const char* needle)
+{
+	int i, len;
+
+	if (!s || !needle)
+		return FALSE;
+
+	len = (int)strlen(needle);
+	for (i = 0; i < len; i++) {
+		if (!s[i] || toupper(s[i]) != toupper(needle[i])) {
+			return FALSE;
+		}
+	}
+
+	return TRUE;
 }
 
 static void syslog_writefile(int mask, const char* fmt, va_list args)
@@ -653,7 +674,6 @@ static int a_get_addr(sockaddr_t* addr, char *host, char *port,
 		loge("a_get_addr() failed: a_new_state() failed: alloc");
 		return -1;
 	}
-
 
 	a_get_addr_st(st, ipv6_prefer ? AF_INET6 : AF_INET);
 
@@ -1792,7 +1812,13 @@ static void free_conn(conn_t* conn)
 	stream_free(&conn->url);
 	stream_free(&conn->field.name);
 	stream_free(&conn->field.value);
-	free(conn->proxy);
+	if (conn->proxy) {
+		stream_free(&conn->proxy->ws);
+		free(conn->proxy);
+	}
+	free(conn->host);
+	free(conn->rhost);
+	free(conn->rport);
 }
 
 static void destroy_conn(conn_t* conn)
@@ -2113,13 +2139,15 @@ static int get_host_and_port(char** host, char** port,
 	return 0;
 }
 
-static int get_remote_host_and_port(char** host, char** port, const conn_t* conn)
+static int get_remote_host_and_port(char** host, char** port, conn_t* conn)
 {
-	if (conn->mode == pm_tunnel) {
-		char* copy = strdup(conn->url.array), *h, *p;
+	if (conn->mode == pm_tunnel || (!startwith(conn->url.array, "http://") && conn->host)) {
+		char* copy = conn->mode == pm_tunnel ? strdup(conn->url.array) : strdup(conn->host);
+		char *h, * p;
 
 		if (parse_addrstr(copy, &h, &p)) {
 			free(copy);
+			loge("get_remote_host_and_port() error: parse \"%s\" failed\n", conn->url.array);
 			return -1;
 		}
 
@@ -2134,9 +2162,14 @@ static int get_remote_host_and_port(char** host, char** port, const conn_t* conn
 	}
 	else {
 		if (get_host_and_port(host, port, conn->url.array, conn->url.size, 0)) {
+			loge("get_remote_host_and_port() error: parse \"%s\" failed\n", conn->url.array);
 			return -1;
 		}
 	}
+
+	conn->rhost = *host;
+	conn->rport = *port;
+
 	return 0;
 }
 
@@ -2144,7 +2177,6 @@ static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
 {
 	char* host, * port;
 	if (get_remote_host_and_port(&host, &port, conn)) {
-		loge("get_remote_addr() error: parse \"%s\" failed\n", conn->url.array);
 		return -1;
 	}
 
@@ -2162,15 +2194,11 @@ static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
 #ifdef ASYN_DNS
 	if (a_get_addr(addr, host, port, conn, cb)) {
 		loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
-		free(host);
-		free(port);
 		return -1;
 	}
 #else
 	if (host2addr(addr, host, port)) {
 		loge("get_remote_addr() error: resolve \"%s:%s\" failed\n", host, port);
-		free(host);
-		free(port);
 		return -1;
 	}
 
@@ -2183,59 +2211,37 @@ static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
 	(*cb)(addr, FALSE, conn, host, port);
 #endif
 
-	free(host);
-	free(port);
-
 	return 0;
 }
 
 static int remove_dnscache(conn_t* conn)
 {
-	char* host, * port;
+	char* host = conn->rhost, * port = conn->rport;
 
 	if (dns_timeout <= 0)
 		return 0;
 
-	if (conn->mode == pm_tunnel) {
-		char* copy = strdup(conn->url.array);
-		if (parse_addrstr(copy, &host, &port)) {
-			free(copy);
-			loge("remove_dnscache() error: get 'host' from \"%s\" failed\n",
-				conn->url.array);
-			return -1;
-		}
-		if (dnscache_remove(host)) {
-			logd("remove_dnscache() error: remove \"%s\" failed\n", host);
-			free(copy);
-			return -1;
-		}
-		free(copy);
-		return 0;
+	if (!host) {
+		logd("remove_dnscache() error: no 'host'\n", host);
+		return -1;
 	}
-	else {
-		if (get_host_and_port(&host, &port, conn->url.array, conn->url.size, 0)) {
-			loge("remove_dnscache() error: get 'host' from \"%s\" failed\n", conn->url.array);
-			return -1;
-		}
-		if (dnscache_remove(host)) {
-			logd("remove_dnscache() error: remove \"%s\" failed\n", host);
-			free(host);
-			free(port);
-			return -1;
-		}
-		free(host);
-		free(port);
-		return 0;
+
+	if (dnscache_remove(host)) {
+		logd("remove_dnscache() error: remove \"%s\" failed\n", host);
+		return -1;
 	}
+
+	return 0;
 }
 
 static int on_remote_connected(conn_t* conn)
 {
 	http_parser* parser = &conn->parser;
 
-	logd("connected %s %s\n",
+	logd("connected %s %s:%s\n",
 		get_sockaddrname(&conn->raddr),
-		conn->url.array);
+		conn->rhost,
+		conn->rport);
 
 	if (conn->mode == pm_tunnel) {
 		if (stream_appendf(&conn->ws, "HTTP/%d.%d 200 Connection Established\r\n\r\n",
@@ -2405,7 +2411,7 @@ static int handle_rwrite(conn_t* conn)
 
 	conn->rtx += nsend;
 
-	logd("handle_rwrite(): write to %s\n", conn->url.array);
+	logd("handle_rwrite(): write to %s:%s\n", conn->rhost, conn->rport);
 
 	update_expire(conn);
 
@@ -2488,6 +2494,14 @@ static int on_field_complete(http_parser* parser)
 	logd("%s: %s\n",
 		conn->field.name.array,
 		conn->field.value.array);
+
+	if (!conn->host && strnicmp(conn->field.name.array, "Host", sizeof("Host")) == 0) {
+		conn->host = strdup(conn->field.value.array);
+		if (!conn->host) {
+			loge("on_field_complete() error: alloc()\n");
+			return -1;
+		}
+	}
 
 	if (parser->method != HTTP_CONNECT) {
 		int r;
@@ -2613,7 +2627,7 @@ static int create_response(conn_t* conn,
 	http_parser* parser = &conn->parser;
 	int content_size = 0;
 	if (content)
-		content_size = strlen(content);
+		content_size = (int)strlen(content);
 	stream_reset(s);
 	if (stream_appendf(s,
 		"HTTP/%d.%d %d %s\r\n"
@@ -2667,9 +2681,10 @@ static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	logi("direct connect %s - %s\n",
+	logi("direct connect %s - %s:%s\n",
 		get_sockaddrname(addr),
-		conn->url.array);
+		conn->rhost,
+		conn->rport);
 
 	if (connect_addr(addr, &conn->rsock, &conn->status)) {
 		return -1;
@@ -2707,9 +2722,10 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 {
 	int r;
 
-	logi("proxy connect %s - %s\n",
+	logi("proxy connect %s - %s:%s\n",
 		get_sockaddrname(&conn->raddr),
-		conn->url.array);
+		conn->rhost,
+		conn->rport);
 
 	conn->by_proxy = TRUE;
 
@@ -2771,7 +2787,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	int proxy_index;
 
 	if (!addr) {
-		loge("on_got_remote_addr() error: get remote address failed %s\n", conn->url.array);
+		loge("on_got_remote_addr() error: get remote address failed %s %s\n", conn->host, conn->url.array);
 		close_conn(conn);
 		return;
 	}
@@ -2782,7 +2798,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		host, port);
 
 	if (is_forbidden(addr)) {
-		logw("on_got_remote_addr() error: dead loop %s\n", conn->url.array);
+		logw("on_got_remote_addr() error: dead loop %s %s\n", conn->host, conn->url.array);
 		close_conn(conn);
 		return;
 	}
@@ -2792,7 +2808,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	if (conn->by_proxy && (proxy_index = select_proxy(conn)) >= 0) {
 		r = connect_proxy(proxy_index, conn);
 		if (r != 0) {
-			logw("on_got_remote_addr() error: connect proxy failed %s\n", conn->url.array);
+			logw("on_got_remote_addr() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
 			close_conn(conn);
 			return;
 		}
@@ -2800,7 +2816,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	else {
 		r = connect_target(conn);
 		if (r != 0) {
-			logw("on_got_remote_addr() error: connect remote failed %s\n", conn->url.array);
+			logw("on_got_remote_addr() error: connect remote failed %s %s\n", conn->host, conn->url.array);
 			close_conn(conn);
 			return;
 		}
@@ -2812,7 +2828,7 @@ static int connect_remote(conn_t* conn)
 	sockaddr_t* addr = &conn->raddr;
 
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
-		loge("connect_remote() error: get remote address failed %s\n", conn->url.array);
+		loge("connect_remote() error: get remote address failed %s %s\n", conn->host, conn->url.array);
 		close_conn(conn);
 		return -1;
 	}
@@ -3116,7 +3132,7 @@ static int handle_rrecv(conn_t* conn)
 
 	conn->rrx += nread;
 
-	logd("handle_rrecv(): recv from %s\n", conn->url.array);
+	logd("handle_rrecv(): recv from %s:%s\n", conn->rhost, conn->rport);
 
 	if (stream_appends(&conn->ws, buffer, nread) == -1) {
 		loge("handle_rrecv() error: stream_appends()\n");
