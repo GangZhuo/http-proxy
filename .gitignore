@@ -27,8 +27,7 @@
 *.i*86
 *.x86_64
 *.hex
-cleandns
-unit-test
+http-proxy
 
 # Debug files
 *.dSYM/
@@ -38,4 +37,7 @@ tags
 
 # vim
 *.swp
+
+#clangd
+.clangd
 
