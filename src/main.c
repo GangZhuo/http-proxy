@@ -2798,7 +2798,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		host, port);
 
 	if (is_forbidden(addr)) {
-		logw("on_got_remote_addr() error: dead loop %s %s\n", conn->host, conn->url.array);
+		logw("on_got_remote_addr() error: forbidden %s %s\n", conn->host, conn->url.array);
 		close_conn(conn);
 		return;
 	}
