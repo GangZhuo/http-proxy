@@ -3265,7 +3265,14 @@ static int do_loop()
 
 				if (FD_ISSET(conn->sock, &errorset)) {
 					int err = getsockerr(conn->sock);
-					loge("do_loop(): conn.sock error: errno=%d, %s \n",
+					loge("do_loop(): conn.sock error (%s%s%s%s%s%s%s): errno=%d, %s \n",
+						get_sockname(conn->sock),
+						conn->rhost ? " => " : "",
+						conn->rhost ? get_sockaddrname(&conn->raddr) : "",
+						conn->rhost ? " - " : "",
+						conn->rhost ? conn->rhost : "",
+						conn->rhost ? ":" : "",
+						conn->rport ? conn->rport : "",
 						err, strerror(err));
 					r = -1;
 				}
@@ -3284,7 +3291,11 @@ static int do_loop()
 				if (!r && conn->rsock > 0) {
 					if (FD_ISSET(conn->rsock, &errorset)) {
 						int err = getsockerr(conn->rsock);
-						loge("do_loop(): conn.rsock error: errno=%d, %s \n",
+						loge("do_loop(): conn.rsock error (%s => %s - %s:%s): errno=%d, %s \n",
+							get_sockname(conn->sock),
+							get_sockaddrname(&conn->raddr),
+							conn->rhost,
+							conn->rport,
 							err, strerror(err));
 						r = -1;
 						if (err == WSAETIMEDOUT || err == ETIMEDOUT) {
@@ -3324,7 +3335,14 @@ static int do_loop()
 					remove_dnscache(conn);
 				}
 				else if (!r && is_expired(conn, now)) {
-					logd("connection timeout - %s\n", get_sockname(conn->sock));
+					logd("connection timeout - %s%s%s%s%s%s%s\n",
+						get_sockname(conn->sock),
+						conn->rhost ? " => " : "",
+						conn->rhost ? get_sockaddrname(&conn->raddr) : "",
+						conn->rhost ? " - " : "",
+						conn->rhost ? conn->rhost : "",
+						conn->rhost ? ":" : "",
+						conn->rport ? conn->rport : "");
 					r = -1;
 					if (conn->rrx == 0) {
 						remove_dnscache(conn);
