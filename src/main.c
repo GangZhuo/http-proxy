@@ -883,6 +883,7 @@ static char* get_sockaddrname(sockaddr_t* addr)
 	return get_addrname((struct sockaddr*)(&addr->addr));
 }
 
+/* get remote address name */
 static char* get_sockname(sock_t sock)
 {
 	static char buffer[INET6_ADDRSTRLEN + 16] = { 0 };
