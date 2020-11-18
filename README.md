@@ -10,7 +10,7 @@ http-proxy 能够把 socks5 代理转换为 http 代理，另外，可以根据 
 
 通过 http-proxy 我们仅需要配置一次，然后，是否需要通过 socks5 代理，可由 http-proxy 自动决定。 
 
-更多见 [使用说明]。
+更多见 [使用说明] 和 [配置示例]。
 
 Http proxy. With http-proxy, you can assign a socks5 proxy as upstream proxy,
 and, use "chnroute" to by pass proxy.
@@ -163,6 +163,7 @@ You can generate latest chnroute6.txt using this command:
 	grep ipv6 | grep CN | awk -F\| '{ printf("%s/%d\n", $4, $5) }' > chnroute6.txt
 
 [使用说明]: https://github.com/GangZhuo/http-proxy/wiki/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E
+[配置示例]: https://github.com/GangZhuo/http-proxy/wiki/%E9%85%8D%E7%BD%AE%E7%A4%BA%E4%BE%8B
 [CleanDNS]:  https://github.com/GangZhuo/CleanDNS
 [ChinaDNS]:  https://github.com/shadowsocks/ChinaDNS
 [About chnroute]:  https://github.com/shadowsocks/ChinaDNS#about-chnroute
