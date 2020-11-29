@@ -34,6 +34,7 @@ http-proxy
 
 # ctags
 tags
+.tags
 
 # vim
 *.swp

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <getopt.h>
 #include <string.h>
 #include <stdint.h>
@@ -80,6 +81,7 @@ typedef int sock_t;
 #include "../http-parser/http_parser.h"
 #include "chnroute.h"
 #include "dnscache.h"
+#include "base64url.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -147,6 +149,13 @@ typedef int sock_t;
 #define ERR_SET_NONBLOCK  -2
 #define ERR_CONNECT		  -3
 
+/* Proxy type */
+#define SOCKS5_PROXY 0
+#define HTTP_PROXY   1
+
+#define PROXY_USERNAME_LEN 50
+#define PROXY_PASSWORD_LEN 50
+
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
 typedef struct sockaddr_t sockaddr_t;
@@ -183,8 +192,11 @@ struct sockaddr_t {
 };
 
 typedef struct proxy_t {
+	int proxy_type;
 	sockaddr_t addr;
 	int proxy_index;
+	char username[PROXY_USERNAME_LEN];
+	char password[PROXY_PASSWORD_LEN];
 } proxy_t;
 
 typedef struct listen_t {
@@ -221,6 +233,7 @@ typedef enum proxy_status {
 typedef struct proxy_ctx {
 	int proxy_index;
 	proxy_status status;
+	stream_t rs; /* read stream */
 	stream_t ws; /* write stream */
 } proxy_ctx;
 
@@ -1684,6 +1697,157 @@ static int resolve_addrstr(
 	return i;
 }
 
+static char *get_proxy_type(char *s, int *proxy_type)
+{
+	char *p;
+
+	p = strstr(s, "://");
+
+	if (!p) {
+		/* socks5 default */
+		*proxy_type = SOCKS5_PROXY;
+		return s;
+	}
+
+	*p = '\0';
+	if (strcmp(s, "socks5") == 0) {
+		*proxy_type = SOCKS5_PROXY;
+	}
+	else if (strcmp(s, "http") == 0) {
+		*proxy_type = HTTP_PROXY;
+	}
+	else {
+		loge("get_proxy_type() error: unsupport proxy(%s), "
+			"only \"socks5\" and \"http\" supported\n", s);
+		*p = ':'; /* restore */
+		return NULL;
+	}
+
+	*p = ':'; /* restore */
+	p += strlen("://");
+
+	return p;
+}
+
+static char *get_proxy_username_and_password(char *s, char *username, char *password)
+{
+	char *p, *colon;
+
+	p = strchr(s, '@');
+
+	if (!p) {
+		*username = '\0';
+		*password = '\0';
+		return s;
+	}
+
+	*p = '\0';
+	colon = strchr(s, ':');
+
+	if (colon) {
+		*colon = '\0';
+		strncpy(username, s, PROXY_USERNAME_LEN - 1);
+		strncpy(password, colon + 1, PROXY_PASSWORD_LEN - 1);
+		*colon = ':';
+	}
+	else {
+		strncpy(username, s, PROXY_USERNAME_LEN - 1);
+		*password = '\0';
+	}
+
+	/* restore */
+	*p = '@';
+
+	if (strlen(username) == 0) {
+		loge("get_proxy_username_and_password() error: no username\n");
+		return NULL;
+	}
+	if (strlen(password) == 0) {
+		loge("get_proxy_username_and_password() error: no password\n");
+		return NULL;
+	}
+
+	++p;
+
+	return p;
+}
+
+static const char *get_proxy_default_port(int proxy_type)
+{
+	switch (proxy_type) {
+		case SOCKS5_PROXY: return "1080";
+		case HTTP_PROXY: return "80";
+		default: return NULL;
+	}
+}
+
+int str2proxy(const char *s, proxy_t *proxy)
+{
+	char *copy = strdup(s), *p;
+	char *host, *port;
+	int ai_family;
+	int r;
+
+	p = get_proxy_type(copy, &proxy->proxy_type);
+	if (!p) {
+		free(copy);
+		return -1;
+	}
+
+	p = get_proxy_username_and_password(p, proxy->username, proxy->password);
+	if (!p) {
+		free(copy);
+		return -1;
+	}
+
+	if (parse_addrstr(p, &host, &port)) {
+		free(copy);
+		return -1;
+	}
+
+	if (!port || strlen(port) == 0) {
+		port = (char*)get_proxy_default_port(proxy->proxy_type);
+		assert(port);
+	}
+
+	r = host2addr(&proxy->addr, host, port);
+
+	free(copy);
+
+	return r;
+}
+
+int str2proxies(
+	const char* str,
+	proxy_t* proxies,
+	int max_num)
+{
+	char* s, * p;
+	int i;
+	proxy_t* proxy;
+
+	s = strdup(str);
+
+	for (i = 0, p = strtok(s, ",");
+		p && *p && i < max_num;
+		p = strtok(NULL, ",")) {
+
+		proxy = proxies + i;
+
+		if (str2proxy(p, proxy)) {
+			free(s);
+			loge("str2proxies() error: resolve \"%s\" failed\n", str);
+			return -1;
+		}
+
+		i++;
+	}
+
+	free(s);
+
+	return i;
+}
+
 static int resolve_listens()
 {
 	memset(listens, 0, sizeof(listens));
@@ -1814,6 +1978,7 @@ static void free_conn(conn_t* conn)
 	stream_free(&conn->field.name);
 	stream_free(&conn->field.value);
 	if (conn->proxy) {
+		stream_free(&conn->proxy->rs);
 		stream_free(&conn->proxy->ws);
 		free(conn->proxy);
 	}
@@ -1880,12 +2045,10 @@ static int init_proxy_server()
 		return -1;
 
 	if (proxy) {
-		proxy_num = resolve_addrstr(
+		proxy_num = str2proxies(
 			proxy,
-			&proxy_list[0].addr,
-			MAX_PROXY,
-			sizeof(proxy_t),
-			"1080");
+			proxy_list,
+			MAX_PROXY);
 		if (proxy_num == -1) {
 			loge("init_proxy_server() error: resolve \"%s\" failed\n",
 				proxy);
@@ -2259,19 +2422,12 @@ static int on_remote_connected(conn_t* conn)
 	return 0;
 }
 
+static int proxy_handshake(conn_t *conn);
+
 static int on_proxy_connected(conn_t* conn)
 {
-	stream_t* s;
-	s = &conn->proxy->ws;
-
-	if (stream_appends(s, "\x5\x1\0", 3) == -1) {
-		loge("on_proxy_connected() error: stream_appends()\n");
-		return -1;
-	}
-
-	conn->proxy->status = ps_handshake0;
-
-	return 0;
+	conn->proxy->status = ps_none;
+	return proxy_handshake(conn);
 }
 
 static int handle_accept(listen_t* ctx)
@@ -2390,6 +2546,11 @@ static int proxy_write(conn_t* conn)
 		return 0;
 
 	logd("proxy_write(): write to %s\n", get_conn_proxyname(conn));
+
+	if (stream_rsize(s) == 0) {
+		s->pos = 0;
+		s->size = 0;
+	}
 
 	update_expire(conn);
 
@@ -2731,6 +2892,7 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 	conn->by_proxy = TRUE;
 
 	if (conn->proxy) {
+		stream_free(&conn->proxy->rs);
 		stream_free(&conn->proxy->ws);
 	}
 	else {
@@ -2986,19 +3148,6 @@ static int handle_recv(conn_t* conn)
 	return 0;
 }
 
-static int proxy_handshake2(conn_t* conn, char* buf, int buflen)
-{
-	if (buflen >= 10 && buf[0] == 0x5 && buf[3] == 0x1) {
-		free(conn->proxy);
-		conn->proxy = NULL;
-		return on_remote_connected(conn);
-	}
-	else {
-		loge("proxy_handshake2() error: reject by proxy server\n");
-		return -1;
-	}
-}
-
 static char* sin_port_to_bytes(uint16_t port)
 {
 	static char bytes[2];
@@ -3018,28 +3167,50 @@ static char* sin_port_to_bytes(uint16_t port)
 	return bytes;
 }
 
-static int proxy_handshake1(conn_t* conn)
+static int socks5_handshake3(conn_t* conn)
+{
+	stream_t *s = &conn->proxy->rs;
+	char *buf = s->array;
+	int buflen = s->size;
+
+	if (buflen >= 10 && buf[0] == 0x5 && buf[3] == 0x1) {
+		free(conn->proxy);
+		conn->proxy = NULL;
+		logd("socks5_handshake3(): socks5 handshaked\n");
+		return on_remote_connected(conn);
+	}
+	else {
+		loge("socks5_handshake3() error: reject by proxy server\n");
+		return -1;
+	}
+}
+
+static int socks5_handshake2(conn_t* conn)
 {
 	struct sockaddr* addr = (struct sockaddr*) & conn->raddr.addr;
 	stream_t* s;
 
 	s = &conn->proxy->ws;
 
+	/* clear send stream */
+	s->pos = 0;
+	s->size = 0;
+
 	if (addr->sa_family == AF_INET) {
 		struct sockaddr_in* in = (struct sockaddr_in*)addr;
 
 		if (stream_appends(s, "\x5\x1\0\x1", 4) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 
 		if (stream_appends(s, (const char*)& in->sin_addr, 4) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 
 		if (stream_appends(s, sin_port_to_bytes(in->sin_port), 2) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 	}
@@ -3047,69 +3218,236 @@ static int proxy_handshake1(conn_t* conn)
 		struct sockaddr_in6* in = (struct sockaddr_in6*)addr;
 
 		if (stream_appends(s, "\x5\x1\0\x4", 4) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 
 		if (stream_appends(s, (const char*)& in->sin6_addr, 16) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 
 		if (stream_appends(s, sin_port_to_bytes(in->sin6_port), 2) == -1) {
-			loge("proxy_handshake0() error: stream_appends()\n");
+			loge("socks5_handshake2() error: stream_appends()\n");
 			goto err;
 		}
 	}
 	else {
-		loge("proxy_handshake0() error: unknown address family\n");
+		loge("socks5_handshake2() error: unknown address family\n");
 		goto err;
 	}
 
+	/* clear receive stream, and waiting data */
+	conn->proxy->rs.pos = 0;
+	conn->proxy->rs.size = 0;
 	conn->proxy->status = ps_handshake1;
 
 	return 0;
-err:
+
+  err:
 	return -1;
 }
 
-static int proxy_handshake0(conn_t* conn, char* buf, int buflen)
+static int socks5_handshake1(conn_t* conn)
 {
+	stream_t *s = &conn->proxy->rs;
+	char *buf = s->array;
+	int buflen = s->size;
+
 	if (buflen >= 2 && buf[0] == 0x5 && buf[1] == 0x0) {
-		return proxy_handshake1(conn);
+		return socks5_handshake2(conn);
 	}
 	else {
-		loge("proxy_handshake0() error: reject by proxy server\n");
+		loge("socks5_handshake1() error: reject by proxy server\n");
 		return -1;
+	}
+}
+
+static int socks5_handshake0(conn_t *conn)
+{
+	stream_t *s = &conn->proxy->ws;
+
+	if (stream_appends(s, "\x5\x1\0", 3) == -1) {
+		loge("socks5_handshake0() error: stream_appends()\n");
+		return -1;
+	}
+
+	/* clear receive stream, and waiting data */
+	conn->proxy->rs.pos = 0;
+	conn->proxy->rs.size = 0;
+	conn->proxy->status = ps_handshake0;
+
+	return 0;
+}
+
+static int socks5_handshake(conn_t *conn)
+{
+	switch (conn->proxy->status) {
+		case ps_none:
+			return socks5_handshake0(conn);
+		case ps_handshake0:
+			return socks5_handshake1(conn);
+		case ps_handshake1:
+			return socks5_handshake3(conn);
+		default:
+			loge("socks5_handshake() error: unknown proxy status\n");
+			return -1;
+	}
+	return 0;
+}
+
+static int hp_handshake1(conn_t *conn)
+{
+	stream_t *s = &conn->proxy->rs;
+	const char *space;
+	int http_code = 0;
+
+	logd("hp_handshake1(): recv\r\n%s\n", s->array);
+
+	if (strstr(s->array, "\r\n\r\n")) {
+		if (s->size > sizeof("HTTP/1.1 XXX") && strncmp(s->array, "HTTP/", 5) == 0 &&
+			(space = strchr(s->array, ' ')) != NULL) {
+			char http_code_str[4];
+			strncpy(http_code_str, space + 1, sizeof(http_code_str));
+			http_code_str[3] = '\0';
+			http_code = atoi(http_code_str);
+		}
+		else {
+			http_code = -1; /* not a HTTP response */
+		}
+	}
+	else {
+		/* do nothing, just wait for full header data */
+	}
+
+	if (http_code == 200) {
+		free(conn->proxy);
+		conn->proxy = NULL;
+		logd("hp_handshake1(): http proxy handshaked\n");
+		return on_remote_connected(conn);
+	}
+	else if (http_code != 0 && http_code != 200) {
+		loge("hp_handshake1() error: http_code=%d\n%s\n", http_code, s->array);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int hp_handshake0(conn_t *conn)
+{
+	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
+	stream_t *s = &conn->proxy->ws;
+	struct sockaddr_t* target_addr = &conn->raddr;
+	const char *target_host = get_sockaddrname(target_addr);
+	const int authorization = strlen(proxy->username) > 0;
+	char *auth_code = NULL;
+	int auth_code_len = 0;
+	int r;
+
+	if (authorization) {
+		char auth_str[PROXY_USERNAME_LEN + PROXY_PASSWORD_LEN];
+		sprintf(auth_str, "%s:%s", proxy->username, proxy->password);
+		auth_code = base64url_encode((const unsigned char*)auth_str,
+			strlen(auth_str), &auth_code_len);
+	}
+
+	r = stream_writef(s,
+		"CONNECT %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
+		"User-Agent: "PROGRAM_NAME"/"PROGRAM_VERSION"\r\n"
+		"Proxy-Connection: keep-alive\r\n"
+		"Connection: keep-alive\r\n"
+		"%s%s%s"
+		"\r\n",
+		target_host,
+		target_host,
+		authorization ? "Authorization: Basic " : "",
+		authorization ? auth_code : "",
+		authorization ? "\r\n" : "");
+
+	if (r == -1) {
+		loge("hp_handshake0() error: stream_writef()\n");
+		free(auth_code);
+		return -1;
+	}
+
+	free(auth_code);
+
+	logd("hp_handshake0(): send\r\n%s\n", s->array);
+
+	s->pos = 0;
+
+	/* clear receive stream, and waiting data */
+	conn->proxy->rs.pos = 0;
+	conn->proxy->rs.size = 0;
+	conn->proxy->status = ps_handshake0;
+
+	return 0;
+}
+
+static int hp_handshake(conn_t *conn)
+{
+	switch (conn->proxy->status) {
+		case ps_none:
+			return hp_handshake0(conn);
+		case ps_handshake0:
+			return hp_handshake1(conn);
+		default:
+			loge("hp_handshake() error: unknown proxy status\n");
+			return -1;
+	}
+	return -1;
+}
+
+static int proxy_handshake(conn_t *conn)
+{
+	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
+
+	switch (proxy->proxy_type) {
+		case SOCKS5_PROXY:
+			return socks5_handshake(conn);
+		case HTTP_PROXY:
+			return hp_handshake(conn);
+		default:
+			loge("proxy_handshake() error: unsupport proxy type\n");
+			return -1;
 	}
 }
 
 static int proxy_recv(conn_t* conn)
 {
 	int nread, err;
-	char buffer[BUF_SIZE];
+	stream_t* s = &conn->proxy->rs;
 
-	nread = tcp_recv(conn->rsock, buffer, sizeof(buffer));
+	if (stream_rcap(s) < 1024) {
+		int new_cap = MAX(s->cap * 2, 1024);
+		if (stream_set_cap(s, new_cap)) {
+			return -1;
+		}
+	}
+
+	nread = tcp_recv(conn->rsock, s->array + s->pos, s->cap - s->pos - 1);
 
 	if (nread == -1)
 		return -1;
 
 	if (nread == 0)
-		return 0;
+		return 0; /* EAGAIN */
 
 	logd("proxy_recv(): recv from %s\n", get_conn_proxyname(conn));
 
-	switch (conn->proxy->status) {
-	case ps_handshake0:
-		err = proxy_handshake0(conn, buffer, nread);
-		break;
-	case ps_handshake1:
-		err = proxy_handshake2(conn, buffer, nread);
-		break;
-	default:
-		err = -1;
-		break;
+	s->pos += nread;
+	s->size += nread;
+	s->array[s->pos] = '\0';
+
+	if (s->size >= HTTP_MAX_HEADER_SIZE) {
+		loge("proxy_recv() error: received too large (>= %s bytes)"
+			" proxy handshake data\n", s->pos);
+		return -1;
 	}
+
+	err = proxy_handshake(conn);
 
 	if (!err) {
 		update_expire(conn);

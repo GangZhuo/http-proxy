@@ -1,11 +1,12 @@
 debug = 0
 
-OBJS = src/log.o \
+OBJS = src/base64url.o \
+       src/log.o \
        src/stream.o \
-	   src/chnroute.o \
-	   src/dnscache.o \
-	   http-parser/http_parser.o \
-	   rbtree/rbtree.c
+       src/chnroute.o \
+       src/dnscache.o \
+       http-parser/http_parser.o \
+       rbtree/rbtree.c
 
 CFLAGS += -DASYN_DNS
 MY_LIBS += -lcares
