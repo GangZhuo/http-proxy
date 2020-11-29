@@ -1234,11 +1234,14 @@ Options:\n\
                            e.g.: --chnroute=lan.txt,chnroute.txt,chnroute6.txt.\n\
   --forbidden=FORBIDDEN_FILE Path to forbidden route file, \n\
                            e.g.: --forbidden=self.txt,youtube.txt.\n\
-  --proxy=SOCKS5_PROXY     Socks5 proxy, e.g. --proxy=127.0.0.1:1080\n\
-                           or --proxy=[::1]:1080. More than one proxy is supported,\n\
+  --proxy=PROXY_URL        Proxy url, e.g. --proxy=socks5://127.0.0.1:1080\n\
+                           or --proxy=http://username:password@[::1]:80. \n\
+                           More than one proxy is supported,\n\
                            in the case, if first proxy is unconnectable, it is \n\
                            automatic to switch to next proxy.\n\
-                           Only socks5 with no authentication is supported.\n\
+                           Only socks5 with no authentication and anonymous http proxy\n\
+                           or basic authentication http proxy are supported.\n\
+                           The http proxy must be support CONNECT method.\n\
   --ipv6-prefer            IPv6 preferential.\n\
   --reverse                Reverse. If set, then connect server by proxy, \n\
                            when the server's IP in the chnroute.\n\
