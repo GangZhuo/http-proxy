@@ -285,6 +285,7 @@ static int ipv6_prefer = 0;
 static int dns_timeout = -1;
 static char* forbidden_file = NULL;
 static int reverse = 0;
+static int resolve_on_server = 0;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -1245,6 +1246,7 @@ Options:\n\
   --ipv6-prefer            IPv6 preferential.\n\
   --reverse                Reverse. If set, then connect server by proxy, \n\
                            when the server's IP in the chnroute.\n\
+  --resolve-on-server      Also resolve domain on proxy server.\n\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
   -V                       Print version and then exit.\n\
@@ -1270,6 +1272,7 @@ static int parse_args(int argc, char** argv)
 		{"dns-server", required_argument, NULL, 11},
 		{"forbidden",  required_argument, NULL, 12},
 		{"reverse",    no_argument,       NULL, 13},
+		{"resolve-on-server",no_argument, NULL, 14},
 		{0, 0, 0, 0}
 	};
 
@@ -1313,6 +1316,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 13:
 			reverse = 1;
+			break;
+		case 14:
+			resolve_on_server = 1;
 			break;
 		case 'h':
 			usage();
@@ -1394,6 +1400,9 @@ static void print_args()
 
 	if (reverse)
 		logn("reverse: yes\n");
+
+	if (resolve_on_server)
+		logn("also resolve on proxy server: yes\n");
 
 #ifdef ASYN_DNS
 	a_print_servers();
@@ -1558,6 +1567,11 @@ static int read_config_file(const char* config_file, int force)
 		else if (strcmp(name, "reverse") == 0 && strlen(value)) {
 			if (force || !reverse) {
 				reverse = is_true_val(value);
+			}
+		}
+		else if (strcmp(name, "resolve_on_server") == 0 && strlen(value)) {
+			if (force || !resolve_on_server) {
+				resolve_on_server = is_true_val(value);
 			}
 		}
 		else {
@@ -3169,6 +3183,85 @@ static char* sin_port_to_bytes(uint16_t port)
 	return bytes;
 }
 
+static int socks5_write_addr(stream_t *s, struct sockaddr *addr)
+{
+	if (addr->sa_family == AF_INET) {
+		struct sockaddr_in* in = (struct sockaddr_in*)addr;
+
+		if (stream_appends(s, "\x5\x1\0\x1", 4) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, (const char*)& in->sin_addr, 4) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, sin_port_to_bytes(in->sin_port), 2) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+	}
+	else if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6* in = (struct sockaddr_in6*)addr;
+
+		if (stream_appends(s, "\x5\x1\0\x4", 4) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, (const char*)& in->sin6_addr, 16) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+
+		if (stream_appends(s, sin_port_to_bytes(in->sin6_port), 2) == -1) {
+			loge("socks5_write_addr() error: stream_appends()\n");
+			goto err;
+		}
+	}
+	else {
+		loge("socks5_write_addr() error: unknown address family\n");
+		goto err;
+	}
+
+	return 0;
+
+  err:
+	return -1;
+}
+
+static int socks5_write_host_port(stream_t *s, const char *host, const char *port)
+{
+	unsigned char host_len = (unsigned char)strlen(host);
+
+	if (stream_appends(s, "\x5\x1\0\x3", 4) == -1) {
+		loge("socks5_write_host_port() error: stream_appends()\n");
+		goto err;
+	}
+
+	if (stream_appends(s, (const char *)&host_len, 1) == -1) {
+		loge("socks5_write_host_port() error: stream_appends()\n");
+		goto err;
+	}
+
+	if (stream_appends(s, host, host_len) == -1) {
+		loge("socks5_write_host_port() error: stream_appends()\n");
+		goto err;
+	}
+
+	if (stream_appends(s, sin_port_to_bytes(htons(atoi(port))), 2) == -1) {
+		loge("socks5_write_host_port() error: stream_appends()\n");
+		goto err;
+	}
+
+	return 0;
+
+  err:
+	return -1;
+}
+
 static int socks5_handshake3(conn_t* conn)
 {
 	stream_t *s = &conn->proxy->rs;
@@ -3198,45 +3291,20 @@ static int socks5_handshake2(conn_t* conn)
 	s->pos = 0;
 	s->size = 0;
 
-	if (addr->sa_family == AF_INET) {
-		struct sockaddr_in* in = (struct sockaddr_in*)addr;
-
-		if (stream_appends(s, "\x5\x1\0\x1", 4) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
-			goto err;
-		}
-
-		if (stream_appends(s, (const char*)& in->sin_addr, 4) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
-			goto err;
-		}
-
-		if (stream_appends(s, sin_port_to_bytes(in->sin_port), 2) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
-			goto err;
-		}
-	}
-	else if (addr->sa_family == AF_INET6) {
-		struct sockaddr_in6* in = (struct sockaddr_in6*)addr;
-
-		if (stream_appends(s, "\x5\x1\0\x4", 4) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
-			goto err;
-		}
-
-		if (stream_appends(s, (const char*)& in->sin6_addr, 16) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
-			goto err;
-		}
-
-		if (stream_appends(s, sin_port_to_bytes(in->sin6_port), 2) == -1) {
-			loge("socks5_handshake2() error: stream_appends()\n");
+	if (resolve_on_server) {
+		if (socks5_write_host_port(s, conn->rhost, conn->rport)) {
 			goto err;
 		}
 	}
 	else {
-		loge("socks5_handshake2() error: unknown address family\n");
-		goto err;
+		if (socks5_write_addr(s, addr)) {
+			goto err;
+		}
+	}
+
+	if (loglevel >= LOG_DEBUG) {
+		logd("socks5 data:\n");
+		bprint(s->array, s->size);
 	}
 
 	/* clear receive stream, and waiting data */
@@ -3362,10 +3430,20 @@ static int hp_handshake0(conn_t *conn)
 	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
 	stream_t *s = &conn->proxy->ws;
 	struct sockaddr_t* target_addr = &conn->raddr;
+	char target_host[512];
 	const int authorization = strlen(proxy->username) > 0;
 	char *auth_code = NULL;
 	int auth_code_len = 0;
 	int r;
+
+	if (resolve_on_server) {
+		snprintf(target_host, sizeof(target_host), "%s:%s", conn->rhost, conn->rport);
+	}
+	else {
+		strncpy(target_host, get_sockaddrname(target_addr), sizeof(target_host));
+	}
+
+	target_host[sizeof(target_host) - 1] = '\0';
 
 	if (authorization) {
 		char auth_str[PROXY_USERNAME_LEN + PROXY_PASSWORD_LEN];
@@ -3375,15 +3453,15 @@ static int hp_handshake0(conn_t *conn)
 	}
 
 	r = stream_writef(s,
-		"CONNECT %s:%s HTTP/1.1\r\n"
-		"Host: %s:%s\r\n"
+		"CONNECT %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
 		"User-Agent: "PROGRAM_NAME"/"PROGRAM_VERSION"\r\n"
 		"Proxy-Connection: keep-alive\r\n"
 		"Connection: keep-alive\r\n"
 		"%s%s%s"
 		"\r\n",
-		conn->rhost, conn->rport,
-		conn->rhost, conn->rport,
+		target_host,
+		target_host,
 		authorization ? "Proxy-Authorization: Basic " : "",
 		authorization ? auth_code : "",
 		authorization ? "\r\n" : "");
