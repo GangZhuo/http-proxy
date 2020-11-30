@@ -2029,19 +2029,19 @@ static int init_proxy_server()
 {
 	int i;
 
-	if (log_file) {
+	if (log_file && *log_file) {
 		open_logfile(log_file);
 	}
-	else if (launch_log) {
+	else if (launch_log && *launch_log) {
 		open_logfile(launch_log);
 	}
 
-	if (config_file) {
+	if (config_file && *config_file) {
 		if (read_config_file(config_file, FALSE)) {
 			return -1;
 		}
 
-		if (log_file) {
+		if (log_file && *log_file) {
 			open_logfile(log_file);
 		}
 	}
