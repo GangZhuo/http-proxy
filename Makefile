@@ -5,6 +5,7 @@ OBJS = src/base64url.o \
        src/stream.o \
        src/chnroute.o \
        src/dnscache.o \
+       src/domain_dic.o \
        http-parser/http_parser.o \
        rbtree/rbtree.c
 
