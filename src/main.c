@@ -1788,7 +1788,6 @@ int str2proxy(const char *s, proxy_t *proxy)
 {
 	char *copy = strdup(s), *p;
 	char *host, *port;
-	int ai_family;
 	int r;
 
 	p = get_proxy_type(copy, &proxy->proxy_type);
@@ -3083,7 +3082,7 @@ static int tcp_recv(sock_t sock, char * buf, int buflen)
 	if (nread == -1) {
 		int err = errno;
 		if (!is_eagain(err)) {
-			logi("tcp_recv() error: errno=%d, %s\n",
+			loge("tcp_recv() error: errno=%d, %s\n",
 				err, strerror(err));
 			return -1;
 		}
@@ -3352,7 +3351,7 @@ static int hp_handshake0(conn_t *conn)
 		char auth_str[PROXY_USERNAME_LEN + PROXY_PASSWORD_LEN];
 		sprintf(auth_str, "%s:%s", proxy->username, proxy->password);
 		auth_code = base64url_encode((const unsigned char*)auth_str,
-			strlen(auth_str), &auth_code_len);
+			strlen(auth_str), &auth_code_len, TRUE);
 	}
 
 	r = stream_writef(s,
@@ -3365,7 +3364,7 @@ static int hp_handshake0(conn_t *conn)
 		"\r\n",
 		target_host,
 		target_host,
-		authorization ? "Authorization: Basic " : "",
+		authorization ? "Proxy-Authorization: Basic " : "",
 		authorization ? auth_code : "",
 		authorization ? "\r\n" : "");
 
