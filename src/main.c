@@ -3345,7 +3345,12 @@ static int hp_handshake1(conn_t *conn)
 		return on_remote_connected(conn);
 	}
 	else if (http_code != 0 && http_code != 200) {
-		loge("hp_handshake1() error: http_code=%d\n%s\n", http_code, s->array);
+		if (loglevel >= LOG_DEBUG) {
+			loge("hp_handshake1() error: http_code=%d\n%s\n", http_code, s->array);
+		}
+		else {
+			loge("hp_handshake1() error: http_code=%d\n", http_code);
+		}
 		return -1;
 	}
 
