@@ -391,7 +391,7 @@ static int startwith(const char* s, const char* needle)
 
 static void syslog_writefile(int mask, const char* fmt, va_list args)
 {
-	char buf[640], buf2[1024];
+	char buf[8 * 1024], buf2[8 * 1024];
 	int len;
 	int level = log_level_comp(mask);
 	char date[32];
@@ -433,7 +433,7 @@ static void syslog_vprintf(int mask, const char* fmt, va_list args)
 #ifdef WINDOWS
 	logw("syslog_vprintf(): not implemented in Windows port");
 #else
-	char buf[640];
+	char buf[8 * 1024];
 	int priority = log_level_comp(mask);
 
 	memset(buf, 0, sizeof(buf));
@@ -3301,18 +3301,34 @@ static int socks5_handshake(conn_t *conn)
 static int hp_handshake1(conn_t *conn)
 {
 	stream_t *s = &conn->proxy->rs;
-	const char *space;
+	const char *p;
+	int header_len = 0;
 	int http_code = 0;
 
 	logd("hp_handshake1(): recv\r\n%s\n", s->array);
 
-	if (strstr(s->array, "\r\n\r\n")) {
+	if ((p = strstr(s->array, "\r\n\r\n"))) {
+		header_len = (int)(p - s->array) + 4;
 		if (s->size > sizeof("HTTP/1.1 XXX") && strncmp(s->array, "HTTP/", 5) == 0 &&
-			(space = strchr(s->array, ' ')) != NULL) {
+			(p = strchr(s->array, ' ')) != NULL) {
 			char http_code_str[4];
-			strncpy(http_code_str, space + 1, sizeof(http_code_str));
+			strncpy(http_code_str, p + 1, sizeof(http_code_str));
 			http_code_str[3] = '\0';
 			http_code = atoi(http_code_str);
+			if (http_code != 200 && (p = strstr(s->array, "Content-Length:"))) {
+				char content_length_str[256];
+				p += sizeof("Content-Length:") - 1;
+				char* en = strchr(p, '\n');
+				if (en && (en - p) < sizeof(content_length_str)) {
+					int content_length;
+					memcpy(content_length_str, p, en - p);
+					content_length_str[en - p] = '\0';
+					content_length = atoi(ltrim(rtrim(content_length_str)));
+					if (header_len + content_length > s->size) {
+						http_code = 0; /* waiting http body */
+					}
+				}
+			}
 		}
 		else {
 			http_code = -1; /* not a HTTP response */

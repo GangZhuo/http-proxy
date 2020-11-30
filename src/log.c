@@ -77,7 +77,7 @@ void log_default_vprintf(int mask, const char *fmt, va_list args)
 
 void log_default_vprintf_with_timestamp(int mask, const char *fmt, va_list args)
 {
-	char buf[640];
+	char buf[8 * 1024];
 	int level = log_level_comp(mask);
 	char date[32];
 	const char *extra_msg;
