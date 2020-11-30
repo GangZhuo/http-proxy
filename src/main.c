@@ -3283,6 +3283,7 @@ static int socks5_handshake3(conn_t* conn)
 static int socks5_handshake2(conn_t* conn)
 {
 	struct sockaddr* addr = (struct sockaddr*) & conn->raddr.addr;
+	socklen_t addrlen = conn->raddr.addrlen;
 	stream_t* s;
 
 	s = &conn->proxy->ws;
@@ -3291,7 +3292,7 @@ static int socks5_handshake2(conn_t* conn)
 	s->pos = 0;
 	s->size = 0;
 
-	if (resolve_on_server) {
+	if (resolve_on_server || addrlen == 0) {
 		if (socks5_write_host_port(s, conn->rhost, conn->rport)) {
 			goto err;
 		}
@@ -3430,13 +3431,14 @@ static int hp_handshake0(conn_t *conn)
 	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
 	stream_t *s = &conn->proxy->ws;
 	struct sockaddr_t* target_addr = &conn->raddr;
+	socklen_t addrlen = conn->raddr.addrlen;
 	char target_host[512];
 	const int authorization = strlen(proxy->username) > 0;
 	char *auth_code = NULL;
 	int auth_code_len = 0;
 	int r;
 
-	if (resolve_on_server) {
+	if (resolve_on_server || addrlen == 0) {
 		snprintf(target_host, sizeof(target_host), "%s:%s", conn->rhost, conn->rport);
 	}
 	else {
