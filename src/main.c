@@ -3357,7 +3357,6 @@ static int hp_handshake0(conn_t *conn)
 	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
 	stream_t *s = &conn->proxy->ws;
 	struct sockaddr_t* target_addr = &conn->raddr;
-	const char *target_host = get_sockaddrname(target_addr);
 	const int authorization = strlen(proxy->username) > 0;
 	char *auth_code = NULL;
 	int auth_code_len = 0;
@@ -3371,15 +3370,15 @@ static int hp_handshake0(conn_t *conn)
 	}
 
 	r = stream_writef(s,
-		"CONNECT %s HTTP/1.1\r\n"
-		"Host: %s\r\n"
+		"CONNECT %s:%s HTTP/1.1\r\n"
+		"Host: %s:%s\r\n"
 		"User-Agent: "PROGRAM_NAME"/"PROGRAM_VERSION"\r\n"
 		"Proxy-Connection: keep-alive\r\n"
 		"Connection: keep-alive\r\n"
 		"%s%s%s"
 		"\r\n",
-		target_host,
-		target_host,
+		conn->rhost, conn->rport,
+		conn->rhost, conn->rport,
 		authorization ? "Proxy-Authorization: Basic " : "",
 		authorization ? auth_code : "",
 		authorization ? "\r\n" : "");
