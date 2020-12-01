@@ -156,6 +156,7 @@
     <ClCompile Include="..\src\main.c" />
     <ClCompile Include="..\src\log.c" />
     <ClCompile Include="..\src\stream.c" />
+    <ClCompile Include="..\src\domain_dic.c" />
     <ClCompile Include="argp\getopt.c" />
     <ClCompile Include="win.c" />
   </ItemGroup>
@@ -168,6 +169,7 @@
     <ClInclude Include="..\src\dnscache.h" />
     <ClInclude Include="..\src\log.h" />
     <ClInclude Include="..\src\stream.h" />
+    <ClCompile Include="..\src\domain_dic.h" />
     <ClInclude Include="argp\getopt.h" />
     <ClInclude Include="win.h" />
   </ItemGroup>
