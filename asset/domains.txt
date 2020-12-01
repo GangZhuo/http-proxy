@@ -1,0 +1,20 @@
+# Domain List
+#
+# Specify a proxy server for the domain name.
+#
+# One domain per line.
+#
+# Format:
+#   <domain>/<options>
+#
+# Options:
+#  -2:  forbidden
+#  -1:  by pass
+#  >=0: by proxy, and the value is an index of selected proxy
+#
+
+www.baidu.com/-1
+www.aliyun.com/-3
+gtalk.google.com/-2
+www.google.com/0
+www.gmail.com/1

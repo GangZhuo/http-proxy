@@ -9,7 +9,7 @@ OBJS = src/base64url.o \
        http-parser/http_parser.o \
        rbtree/rbtree.c
 
-CFLAGS += -DASYN_DNS
+CFLAGS += $(MFLAGS) -DASYN_DNS
 MY_LIBS += -lcares
 
 ifneq ($(debug), 0)

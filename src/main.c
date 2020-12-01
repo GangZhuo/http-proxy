@@ -82,6 +82,7 @@ typedef int sock_t;
 #include "chnroute.h"
 #include "dnscache.h"
 #include "base64url.h"
+#include "domain_dic.h"
 
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.1"
@@ -155,6 +156,10 @@ typedef int sock_t;
 
 #define PROXY_USERNAME_LEN 50
 #define PROXY_PASSWORD_LEN 50
+
+#ifndef MIN
+#define MIN(a, b) ((a) > (b) ? (b) : (a))
+#endif
 
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
@@ -261,6 +266,7 @@ struct conn_t {
 		field_status status;
 	} field;
 	int by_proxy;
+	int by_pass;
 	proxy_ctx* proxy;
 	uint64_t rx; /* receive bytes */
 	uint64_t tx; /* transmit bytes */
@@ -286,6 +292,7 @@ static int dns_timeout = -1;
 static char* forbidden_file = NULL;
 static int reverse = 0;
 static int resolve_on_server = 0;
+static char *domain_file = NULL;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -300,6 +307,7 @@ static chnroute_ctx chnr = NULL;
 static chnroute_ctx forb = NULL;
 static ip_t* local_ips = NULL;
 static int local_ip_cnt = 0;
+static domain_dic_t domains = { 0 };
 
 #ifdef WINDOWS
 
@@ -1247,6 +1255,7 @@ Options:\n\
   --reverse                Reverse. If set, then connect server by proxy, \n\
                            when the server's IP in the chnroute.\n\
   --resolve-on-server      Also resolve domain on proxy server.\n\
+  --domains=DOMAINS_FILE   Domain files.\n\
   -v                       Verbose logging.\n\
   -h                       Show this help message and exit.\n\
   -V                       Print version and then exit.\n\
@@ -1273,6 +1282,7 @@ static int parse_args(int argc, char** argv)
 		{"forbidden",  required_argument, NULL, 12},
 		{"reverse",    no_argument,       NULL, 13},
 		{"resolve-on-server",no_argument, NULL, 14},
+		{"domains",    required_argument, NULL, 15},
 		{0, 0, 0, 0}
 	};
 
@@ -1319,6 +1329,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 14:
 			resolve_on_server = 1;
+			break;
+		case 15:
+			domain_file = strdup(optarg);
 			break;
 		case 'h':
 			usage();
@@ -1385,6 +1398,9 @@ static void print_args()
 
 	if (chnroute)
 		logn("chnroute: %s\n", chnroute);
+
+	if (domain_file)
+		logn("domains: %s\n", domain_file);
 
 	if (forbidden_file)
 		logn("forbidden: %s\n", forbidden_file);
@@ -1572,6 +1588,12 @@ static int read_config_file(const char* config_file, int force)
 		else if (strcmp(name, "resolve_on_server") == 0 && strlen(value)) {
 			if (force || !resolve_on_server) {
 				resolve_on_server = is_true_val(value);
+			}
+		}
+		else if (strcmp(name, "domains") == 0 && strlen(value)) {
+			if (force || !domain_file) {
+				if (domain_file) free(domain_file);
+				domain_file = strdup(value);
 			}
 		}
 		else {
@@ -2025,6 +2047,24 @@ static inline int is_expired(conn_t* conn, time_t now)
 	return conn->expire <= now;
 }
 
+#ifdef HTTP_PROXY_PRINT_DOMAINS
+struct domain_print_state_t {
+	int i;
+};
+
+static int domain_print(rbtree_t *tree, rbnode_t *n, void *state)
+{
+	domain_t *domain = rbtree_container_of(n, domain_t, node);
+	struct domain_print_state_t *st = state;
+
+	st->i++;
+
+	logd("%d %s/%d\n", st->i, domain->domain, domain->proxy_index);
+
+	return 0;
+}
+#endif
+
 static int init_proxy_server()
 {
 	int i;
@@ -2095,6 +2135,49 @@ static int init_proxy_server()
 			loge("init_proxy_server() error: invalid chnroute \"%s\"\n", forbidden_file);
 			return -1;
 		}
+	}
+
+	if (domain_dic_init(&domains)) {
+		loge("init_proxy_server() error: domain_dic_init()\n");
+		return -1;
+	}
+
+	if (domain_file) {
+		if (domain_dic_load_files(&domains, domain_file)) {
+			loge("init_proxy_server() error: domain_dic_load_files()\n");
+			return -1;
+		}
+#ifdef HTTP_PROXY_PRINT_DOMAINS
+		/* make MFLAGS=-DHTTP_PROXY_PRINT_DOMAINS */
+		{
+			domain_t *domain;
+			struct domain_print_state_t dpstate = { 0 };
+			logd("\ndomains:\n");
+			rbtree_foreach_print(&domains, domain_print, &dpstate);
+			logd("\ntesting domain dictionary:\n");
+			domain = domain_dic_lookup(&domains, "www.google.com");
+			if (domain) {
+				logd("www.google.com found: %s/%d\n", domain->domain, domain->proxy_index);
+			}
+			else {
+				logd("www.google.com not found\n");
+			}
+			domain = domain_dic_lookup(&domains, "WWW.GOOGLE.COM");
+			if (domain) {
+				logd("WWW.GOOGLE.COM found: %s/%d\n", domain->domain, domain->proxy_index);
+			}
+			else {
+				logd("WWW.GOOGLE.COM not found\n");
+			}
+			domain = domain_dic_lookup(&domains, "twitter.com");
+			if (domain) {
+				logd("twitter.com: %s/%d\n", domain->domain, domain->proxy_index);
+			}
+			else {
+				logd("twitter.com not found\n");
+			}
+		}
+#endif
 	}
 
 #ifdef ASYN_DNS
@@ -2180,6 +2263,8 @@ static void uninit_proxy_server()
 	local_ips = NULL;
 
 	dnscache_free();
+
+	domain_dic_free(&domains);
 
 	proxy_num = 0;
 
@@ -2355,10 +2440,7 @@ static int get_remote_host_and_port(char** host, char** port, conn_t* conn)
 
 static int get_remote_addr(sockaddr_t* addr, conn_t* conn, got_addr_callback cb)
 {
-	char* host, * port;
-	if (get_remote_host_and_port(&host, &port, conn)) {
-		return -1;
-	}
+	char *host = conn->rhost, *port = conn->rport;
 
 	if (dns_timeout > 0 && dnscache_get(host, (char*)addr)) {
 		if (addr->addr.ss_family == AF_INET)
@@ -2906,6 +2988,7 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 		conn->rport);
 
 	conn->by_proxy = TRUE;
+	conn->by_pass = FALSE;
 
 	if (conn->proxy) {
 		stream_free(&conn->proxy->rs);
@@ -2977,17 +3060,17 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		host, port);
 
 	if (is_forbidden(addr)) {
-		logw("on_got_remote_addr() error: forbidden %s %s\n", conn->host, conn->url.array);
+		loge("on_got_remote_addr() error: forbidden %s %s\n", conn->host, conn->url.array);
 		close_conn(conn);
 		return;
 	}
 
-	conn->by_proxy = by_proxy(conn);
+	conn->by_proxy = !conn->by_pass && by_proxy(conn);
 
 	if (conn->by_proxy && (proxy_index = select_proxy(conn)) >= 0) {
 		r = connect_proxy(proxy_index, conn);
 		if (r != 0) {
-			logw("on_got_remote_addr() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
+			loge("on_got_remote_addr() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
 			close_conn(conn);
 			return;
 		}
@@ -2995,7 +3078,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	else {
 		r = connect_target(conn);
 		if (r != 0) {
-			logw("on_got_remote_addr() error: connect remote failed %s %s\n", conn->host, conn->url.array);
+			loge("on_got_remote_addr() error: connect remote failed %s %s\n", conn->host, conn->url.array);
 			close_conn(conn);
 			return;
 		}
@@ -3004,7 +3087,51 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 
 static int connect_remote(conn_t* conn)
 {
+	char *host, *port;
+	domain_t *domain = NULL;
 	sockaddr_t* addr = &conn->raddr;
+
+	if (get_remote_host_and_port(&host, &port, conn)) {
+		loge("connect_remote() error: no 'host' and 'port' %s %s\n", conn->host, conn->url.array);
+		close_conn(conn);
+		return -1;
+	}
+
+	/* if proxy is specified, first to determine the proxy base on the domain name */
+	if (proxy_num > 0)
+		domain = domain_dic_lookup(&domains, host);
+
+	if (domain) {
+		if (domain->proxy_index >= 0) {
+			conn->by_proxy = TRUE;
+			conn->by_pass = FALSE;
+			logd("[domain] %s/%d by proxy %s %s\n",
+					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+			if (connect_proxy(MIN(domain->proxy_index, proxy_num - 1), conn)) {
+				loge("connect_remote() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
+				close_conn(conn);
+				return -1;
+			}
+			return 0;
+		}
+		else if (domain->proxy_index == DOMAIN_FORBIDDEN) {
+			logd("[domain] %s/%d forbidden %s %s\n",
+					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+			loge("connect_remote() error: forbidden %s %s\n", conn->host, conn->url.array);
+			close_conn(conn);
+			return -1;
+		}
+		else if (domain->proxy_index == DOMAIN_BY_PASS) {
+			conn->by_proxy = FALSE;
+			conn->by_pass = TRUE;
+			logd("[domain] %s/%d by pass %s %s\n",
+					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+		}
+		else {
+			logw("[domain] %s/%d unknown option, fall back to determine by ip %s %s\n",
+					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+		}
+	}
 
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s %s\n", conn->host, conn->url.array);

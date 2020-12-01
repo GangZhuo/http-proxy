@@ -9,6 +9,10 @@
 extern "C" {
 #endif
 
+#define HTTP_PROXY_MAX_DOMAIN_NAME_LEN 256
+#define DOMAIN_BY_PASS   -1
+#define DOMAIN_FORBIDDEN -2
+
 typedef struct rbtree_t domain_dic_t;
 
 typedef struct domain_t {

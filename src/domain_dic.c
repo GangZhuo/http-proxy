@@ -7,11 +7,15 @@
 #include "../rbtree/rbtree.h"
 #include "log.h"
 
+#ifndef WINDOWS
+#define strnicmp strncasecmp
+#endif
+
 domain_t *domain_create(const char *domain)
 {
 	domain_t *item;
 
-	if (!domain || *domain) {
+	if (!domain || !(*domain)) {
 		loge("domain_create() error: empty domain\n");
 		return NULL;
 	}
@@ -47,7 +51,7 @@ static int rbnkeycmp(void *a, void *b)
 {
 	const char *x = (const char*)a;
 	const char *y = (const char*)b;
-	return strcmp(x, y);
+	return strnicmp(x, y, HTTP_PROXY_MAX_DOMAIN_NAME_LEN);
 }
 
 void rbnfree(rbnode_t *node, void *state)
@@ -138,7 +142,9 @@ int domain_dic_load_file(domain_dic_t *dic, const char *filename)
 		return -1;
 	}
 
-	while ((line = fgets(buf, sizeof(buf), fp)) != NULL) {
+	buf[sizeof(buf) - 1] = '\0';
+
+	while ((line = fgets(buf, sizeof(buf) - 1, fp)) != NULL) {
 		char *sp_pos;
 
 		rownum++;
