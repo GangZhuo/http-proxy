@@ -3065,7 +3065,8 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
-	conn->by_proxy = !conn->by_pass && by_proxy(conn);
+	if (!conn->by_proxy && !conn->by_pass)
+		conn->by_proxy = by_proxy(conn);
 
 	if (conn->by_proxy && (proxy_index = select_proxy(conn)) >= 0) {
 		r = connect_proxy(proxy_index, conn);
@@ -3542,10 +3543,12 @@ static int hp_handshake1(conn_t *conn)
 	}
 	else if (http_code != 0 && http_code != 200) {
 		if (loglevel >= LOG_DEBUG) {
-			loge("hp_handshake1() error: http_code=%d\n%s\n", http_code, s->array);
+			loge("hp_handshake1() error: http_code=%d - %s:%s\n%s\n",
+				http_code, conn->rhost, conn->rport, s->array);
 		}
 		else {
-			loge("hp_handshake1() error: http_code=%d\n", http_code);
+			loge("hp_handshake1() error: http_code=%d - %s:%s\n",
+				http_code, conn->rhost, conn->rport);
 		}
 		return -1;
 	}
