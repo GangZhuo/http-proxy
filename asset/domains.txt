@@ -16,6 +16,6 @@
 #
 # www.baidu.com/-1
 # www.aliyun.com/-3
-# gtalk.google.com/-2
+# mtalk.google.com/1
 # www.google.com/0
 # www.gmail.com/1
