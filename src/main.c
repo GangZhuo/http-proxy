@@ -453,7 +453,7 @@ static void syslog_vprintf(int mask, const char* fmt, va_list args)
 
 static void open_logfile(const char *log_file)
 {
-	if (log_file) {
+	if (log_file && *log_file) {
 		current_log_file = log_file;
 		log_vprintf = syslog_writefile;
 		log_vprintf_with_timestamp = syslog_writefile;
@@ -4060,7 +4060,7 @@ static void run_as_daemonize()
 
 	umask(0);
 
-	if (!log_file) {
+	if (!log_file || !(*log_file)) {
 		open_syslog();
 	}
 
