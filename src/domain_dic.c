@@ -127,7 +127,7 @@ int domain_dic_load_file(domain_dic_t *dic, const char *filename)
 	char buf[512];
 	char *line;
 	FILE *fp;
-	int r, rownum = 0;
+	int rownum = 0;
 	domain_t *item;
 
 	fp = fopen(filename, "rb");
@@ -185,7 +185,7 @@ int domain_dic_load_file(domain_dic_t *dic, const char *filename)
 int domain_dic_load_files(domain_dic_t *dic, const char *filenames)
 {
 	char *s, *p;
-	int r;
+	int r = 0;
 
 	s = strdup(filenames);
 
