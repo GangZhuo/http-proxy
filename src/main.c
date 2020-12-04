@@ -176,8 +176,8 @@ typedef struct a_state_t {
 	char* port;
 	conn_t* conn;
 	got_addr_callback cb;
-	int af_inet;
-	int af_inet6;
+	int af_inet; /* Is IPv4 address queryed? */
+	int af_inet6; /* Is IPv6 address queryed? */
 	int cur_family;
 	int is_conn_destroyed;
 } a_state_t;
