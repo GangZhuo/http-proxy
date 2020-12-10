@@ -2721,9 +2721,12 @@ static int on_first_line_complete(http_parser* parser)
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
 	if (parser->method != HTTP_CONNECT) {
 		int r;
+		const char *path = strchr(conn->url.array + sizeof("http://"), '/');
+		if (!path || !(*path))
+			path = "/";
 		r = stream_appendf(&conn->rws, "%s %s HTTP/%d.%d\r\n",
 			http_method_str(parser->method),
-			conn->url.array,
+			path,
 			parser->http_major,
 			parser->http_minor);
 		if (r == -1) {
