@@ -41,5 +41,6 @@ tags
 
 #clangd
 .clangd
+.cache
 compile_commands.json
 
