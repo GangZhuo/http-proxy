@@ -163,6 +163,13 @@ typedef int sock_t;
 
 #define is_eagain(err) ((err) == EAGAIN || (err) == EINPROGRESS || (err) == EWOULDBLOCK || (err) == WSAEWOULDBLOCK)
 
+#define is_true_val(s) \
+	(strcmp((s), "1") == 0 || \
+	strcmp((s), "on") == 0 || \
+	strcmp((s), "true") == 0 || \
+	strcmp((s), "yes") == 0 || \
+	strcmp((s), "enabled") == 0)
+
 typedef struct sockaddr_t sockaddr_t;
 typedef struct conn_t conn_t;
 
@@ -202,6 +209,8 @@ typedef struct proxy_t {
 	int proxy_index;
 	char username[PROXY_USERNAME_LEN];
 	char password[PROXY_PASSWORD_LEN];
+	int is_support_ipv4;
+	int is_support_ipv6;
 } proxy_t;
 
 typedef struct listen_t {
@@ -236,7 +245,6 @@ typedef enum proxy_status {
 } proxy_status;
 
 typedef struct proxy_ctx {
-	int proxy_index;
 	proxy_status status;
 	stream_t rs; /* read stream */
 	stream_t ws; /* write stream */
@@ -267,6 +275,7 @@ struct conn_t {
 	} field;
 	int by_proxy;
 	int by_pass;
+	int proxy_index;
 	proxy_ctx* proxy;
 	uint64_t rx; /* receive bytes */
 	uint64_t tx; /* transmit bytes */
@@ -293,6 +302,7 @@ static char* forbidden_file = NULL;
 static int reverse = 0;
 static int resolve_on_server = 0;
 static char *domain_file = NULL;
+static int fallback_no_proxy = TRUE;
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -338,7 +348,7 @@ static struct ares_options a_options = { 0 };
 	get_sockaddrname(&get_proxyinfo(index)->addr)
 
 #define get_conn_proxyname(conn) \
-	get_sockaddrname(&get_proxyinfo((conn)->proxy->proxy_index)->addr)
+	get_sockaddrname(&get_proxyinfo((conn)->proxy_index)->addr)
 
 static int connect_proxy(int proxy_index, conn_t* conn);
 
@@ -1380,6 +1390,15 @@ static int check_args()
 	return 0;
 }
 
+static const char *get_proxy_type_name(int proxy_type)
+{
+	switch (proxy_type) {
+		case HTTP_PROXY: return "http";
+		case SOCKS5_PROXY: return "socks5";
+		default: return "";
+	}
+}
+
 static void print_args()
 {
 	int i;
@@ -1405,8 +1424,20 @@ static void print_args()
 	if (forbidden_file)
 		logn("forbidden: %s\n", forbidden_file);
 
-	if (proxy)
+	if (proxy) {
 		logn("proxy: %s\n", proxy);
+		logn("  \ttype\tipv4\tipv6\tauth\taddress\n");
+		for (i = 0; i < proxy_num; i++) {
+			proxy_t *proxy = proxy_list + i;
+			logn("  %d\t%s\t%s\t%s\t%s\t%s\n",
+					i + 1,
+					get_proxy_type_name(proxy->proxy_type),
+					proxy->is_support_ipv4 ? "yes" : "no",
+					proxy->is_support_ipv6 ? "yes" : "no",
+					strlen(proxy->username) > 0 ? "yes" : "no",
+					get_sockaddrname(&proxy->addr));
+		}
+	}
 
 	if (ipv6_prefer)
 		logn("ipv6 prefer: yes\n");
@@ -1474,13 +1505,6 @@ static int read_config_file(const char* config_file, int force)
 		loge("failed to open %s\n", config_file);
 		return -1;
 	}
-
-#define is_true_val(s) \
-   (strcmp((s), "1") == 0 || \
-    strcmp((s), "on") == 0 || \
-	strcmp((s), "true") == 0 || \
-	strcmp((s), "yes") == 0 || \
-	strcmp((s), "enabled") == 0)
 
 	while (!feof(pf)) {
 		memset(line, 0, sizeof(line));
@@ -1602,8 +1626,6 @@ static int read_config_file(const char* config_file, int force)
 	}
 
 	fclose(pf);
-
-#undef is_true_val
 
 	return 0;
 }
@@ -1811,6 +1833,30 @@ static char *get_proxy_username_and_password(char *s, char *username, char *pass
 	return p;
 }
 
+int parse_proxy_options(char *query, proxy_t *proxy)
+{
+	char *s, *p, *eq;
+
+	for (s = query; s && *s; s = p) {
+		p = strchr(s, '&');
+		if (p)
+			*p++ = '\0';
+		eq = strchr(s, '=');
+		if (!eq)
+			continue;
+		*eq = '\0';
+		++eq;
+		if (strnicmp(s, "ipv4", sizeof("ipv4")) == 0) {
+			proxy->is_support_ipv4 = is_true_val(eq);
+		}
+		else if (strnicmp(s, "ipv6", sizeof("ipv6")) == 0) {
+			proxy->is_support_ipv6 = is_true_val(eq);
+		}
+	}
+
+	return 0;
+}
+
 static const char *get_proxy_default_port(int proxy_type)
 {
 	switch (proxy_type) {
@@ -1823,6 +1869,7 @@ static const char *get_proxy_default_port(int proxy_type)
 int str2proxy(const char *s, proxy_t *proxy)
 {
 	char *copy = strdup(s), *p;
+	char *query;
 	char *host, *port;
 	int r;
 
@@ -1830,6 +1877,19 @@ int str2proxy(const char *s, proxy_t *proxy)
 	if (!p) {
 		free(copy);
 		return -1;
+	}
+
+	proxy->is_support_ipv4 = TRUE;
+	proxy->is_support_ipv6 = TRUE;
+
+	query = strchr(p, '?');
+	if (query) {
+		*query = '\0';
+		++query;
+		if (parse_proxy_options(query, proxy)) {
+			free(copy);
+			return -1;
+		}
 	}
 
 	p = get_proxy_username_and_password(p, proxy->username, proxy->password);
@@ -2524,6 +2584,7 @@ static int proxy_handshake(conn_t *conn);
 
 static int on_proxy_connected(conn_t* conn)
 {
+	logd("proxy connected\n");
 	conn->proxy->status = ps_none;
 	return proxy_handshake(conn);
 }
@@ -2962,36 +3023,68 @@ static int connect_target(conn_t* conn)
 	return 0;
 }
 
-static int select_proxy(conn_t* conn)
+static int select_proxy(conn_t* conn, int min_proxy_index)
 {
-	if (proxy_num > 0)
+	int i;
+	int family = conn->raddr.addr.ss_family;
+	proxy_t *proxy;
+
+	for (i = min_proxy_index; i < proxy_num; i++) {
+		proxy = proxy_list + i;
+		if ((family = AF_INET && proxy->is_support_ipv4) ||
+			(family = AF_INET6 && proxy->is_support_ipv6)) {
+			conn->proxy_index = i;
+			conn->by_proxy = TRUE;
+			conn->by_pass = FALSE;
+			return 0;
+		}
+	}
+
+	if (fallback_no_proxy) {
+		conn->by_proxy = FALSE;
+		conn->by_pass = TRUE;
+		logw("select_proxy(): no supported proxy, fallback to no proxy %s %s\n",
+				conn->host, conn->url.array);
 		return 0;
-	return -1;
+	}
+	else {
+		loge("select_proxy() error: no supported proxy %s %s\n",
+				conn->host, conn->url.array);
+		return -1;
+	}
 }
+
+static int do_connect(conn_t *conn, int min_proxy_index);
 
 static int on_connect_proxy_failed(conn_t* conn)
 {
-	int new_proxy_index = conn->proxy->proxy_index + 1;
-	if (new_proxy_index < proxy_num) {
-		logd("fail connect proxy %s, switch to %s\n",
-			get_conn_proxyname(conn),
-			get_proxyname(new_proxy_index));
-		return connect_proxy(new_proxy_index, conn);
-	}
-	return -1;
+	int min_proxy_index;
+
+	min_proxy_index = conn->proxy_index + 1;
+
+	logd("failed connect to proxy %s, switch to next %d\n",
+		get_conn_proxyname(conn),
+		min_proxy_index);
+
+	/* reset proxy flags, so can choose proxy again */
+	conn->by_proxy = conn->by_pass = FALSE;
+
+	return do_connect(conn, min_proxy_index);
 }
 
 static int connect_proxy(int proxy_index, conn_t* conn)
 {
 	int r;
 
-	logi("proxy connect %s - %s:%s\n",
+	logi("proxy(#%d) connect %s - %s:%s\n",
+		proxy_index,
 		get_sockaddrname(&conn->raddr),
 		conn->rhost,
 		conn->rport);
 
 	conn->by_proxy = TRUE;
 	conn->by_pass = FALSE;
+	conn->proxy_index = proxy_index;
 
 	if (conn->proxy) {
 		stream_free(&conn->proxy->rs);
@@ -3004,8 +3097,6 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 	}
 
 	memset(conn->proxy, 0, sizeof(proxy_ctx));
-
-	conn->proxy->proxy_index = proxy_index;
 
 	if ((r = connect_addr(
 		&get_proxyinfo(proxy_index)->addr,
@@ -3045,11 +3136,42 @@ static int by_proxy(conn_t* conn)
 	return !in_chnroute;
 }
 
+static int do_connect(conn_t *conn, int min_proxy_index)
+{
+	int r;
+
+	if (!conn->by_proxy && !conn->by_pass) {
+		conn->by_proxy = by_proxy(conn);
+		conn->by_pass = !conn->by_proxy;
+		if (conn->by_proxy && select_proxy(conn, min_proxy_index)) {
+			loge("do_connect() error: no supported proxy %s %s\n",
+				conn->host, conn->url.array);
+			return -1;
+		}
+	}
+
+	if (conn->by_proxy && conn->proxy_index >= 0) {
+		r = connect_proxy(conn->proxy_index, conn);
+		if (r != 0) {
+			loge("do_connect() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
+			return -1;
+		}
+	}
+	else {
+		r = connect_target(conn);
+		if (r != 0) {
+			loge("do_connect() error: connect remote failed %s %s\n", conn->host, conn->url.array);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	const char* host, const char* port)
 {
 	int r;
-	int proxy_index;
 
 	if (!addr) {
 		loge("on_got_remote_addr() error: get remote address failed %s %s\n", conn->host, conn->url.array);
@@ -3068,24 +3190,10 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
-	if (!conn->by_proxy && !conn->by_pass)
-		conn->by_proxy = by_proxy(conn);
-
-	if (conn->by_proxy && (proxy_index = select_proxy(conn)) >= 0) {
-		r = connect_proxy(proxy_index, conn);
-		if (r != 0) {
-			loge("on_got_remote_addr() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
-			close_conn(conn);
-			return;
-		}
-	}
-	else {
-		r = connect_target(conn);
-		if (r != 0) {
-			loge("on_got_remote_addr() error: connect remote failed %s %s\n", conn->host, conn->url.array);
-			close_conn(conn);
-			return;
-		}
+	r = do_connect(conn, 0);
+	if (r != 0) {
+		close_conn(conn);
+		return;
 	}
 }
 
@@ -3561,7 +3669,7 @@ static int hp_handshake1(conn_t *conn)
 
 static int hp_handshake0(conn_t *conn)
 {
-	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
+	const proxy_t *proxy = proxy_list + conn->proxy_index;
 	stream_t *s = &conn->proxy->ws;
 	struct sockaddr_t* target_addr = &conn->raddr;
 	socklen_t addrlen = conn->raddr.addrlen;
@@ -3637,7 +3745,7 @@ static int hp_handshake(conn_t *conn)
 
 static int proxy_handshake(conn_t *conn)
 {
-	const proxy_t *proxy = proxy_list + conn->proxy->proxy_index;
+	const proxy_t *proxy = proxy_list + conn->proxy_index;
 
 	switch (proxy->proxy_type) {
 		case SOCKS5_PROXY:
@@ -3880,11 +3988,27 @@ static int do_loop()
 					}
 					else if (FD_ISSET(conn->rsock, &writeset)) {
 						if (conn->status == cs_connecting) {
-							conn->status = cs_connected;
-							if (conn->by_proxy)
-								r = on_proxy_connected(conn);
-							else
-								r = on_remote_connected(conn);
+							int err = getsockerr(conn->rsock);
+							if (err) {
+								loge("do_loop(): failed to connect server (%s => %s - %s:%s):"
+									" errno=%d, %s \n",
+									get_sockname(conn->sock),
+									get_sockaddrname(&conn->raddr),
+									conn->rhost,
+									conn->rport,
+									err, strerror(err));
+								if (conn->by_proxy)
+									r = on_connect_proxy_failed(conn);
+								else
+									r = -1;
+							}
+							else {
+								conn->status = cs_connected;
+								if (conn->by_proxy)
+									r = on_proxy_connected(conn);
+								else
+									r = on_remote_connected(conn);
+							}
 						}
 						if (!r) {
 							if (conn->proxy)
