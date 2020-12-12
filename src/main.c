@@ -3043,12 +3043,14 @@ static int select_proxy(conn_t* conn, int min_proxy_index)
 	if (fallback_no_proxy) {
 		conn->by_proxy = FALSE;
 		conn->by_pass = TRUE;
-		logw("select_proxy(): no supported proxy, fallback to no proxy %s %s\n",
+		logw("select_proxy(): no more %s proxy, fallback to no proxy %s %s\n",
+				family == AF_INET ? "IPv4" : "IPv6",
 				conn->host, conn->url.array);
 		return 0;
 	}
 	else {
-		loge("select_proxy() error: no supported proxy %s %s\n",
+		loge("select_proxy() error: no more %s proxy %s %s\n",
+				family == AF_INET ? "IPv4" : "IPv6",
 				conn->host, conn->url.array);
 		return -1;
 	}
