@@ -3045,8 +3045,8 @@ static int select_proxy(conn_t* conn, int min_proxy_index)
 
 	for (i = min_proxy_index; i < proxy_num; i++) {
 		proxy = proxy_list + i;
-		if ((family = AF_INET && proxy->is_support_ipv4) ||
-			(family = AF_INET6 && proxy->is_support_ipv6)) {
+		if ((family == AF_INET && proxy->is_support_ipv4) ||
+			(family == AF_INET6 && proxy->is_support_ipv6)) {
 			conn->proxy_index = i;
 			conn->by_proxy = TRUE;
 			conn->by_pass = FALSE;
