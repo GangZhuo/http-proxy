@@ -302,7 +302,7 @@ static char* forbidden_file = NULL;
 static int reverse = 0;
 static int resolve_on_server = 0;
 static char *domain_file = NULL;
-static int fallback_no_proxy = TRUE;
+static int fallback_no_proxy = -2; /* TRUE|FALSE, -2 mean do not set */
 
 static int running = 0;
 static int is_use_syslog = 0;
@@ -1262,6 +1262,8 @@ Options:\n\
                            or basic authentication http proxy are supported.\n\
                            The http proxy must be support CONNECT method.\n\
   --ipv6-prefer            IPv6 preferential.\n\
+  --fallback-no-proxy=[yes|no] \n\
+                           If there are no proxy selected, then fall back to direct connect.\n\
   --reverse                Reverse. If set, then connect server by proxy, \n\
                            when the server's IP in the chnroute.\n\
   --resolve-on-server      Also resolve domain on proxy server.\n\
@@ -1293,6 +1295,7 @@ static int parse_args(int argc, char** argv)
 		{"reverse",    no_argument,       NULL, 13},
 		{"resolve-on-server",no_argument, NULL, 14},
 		{"domains",    required_argument, NULL, 15},
+		{"fallback-no-proxy",required_argument, NULL, 16},
 		{0, 0, 0, 0}
 	};
 
@@ -1342,6 +1345,9 @@ static int parse_args(int argc, char** argv)
 			break;
 		case 15:
 			domain_file = strdup(optarg);
+			break;
+		case 16:
+			fallback_no_proxy = is_true_val(optarg);
 			break;
 		case 'h':
 			usage();
@@ -1438,6 +1444,9 @@ static void print_args()
 					get_sockaddrname(&proxy->addr));
 		}
 	}
+
+	if (fallback_no_proxy)
+		logn("fallback no proxy: yes\n");
 
 	if (ipv6_prefer)
 		logn("ipv6 prefer: yes\n");
@@ -1618,6 +1627,11 @@ static int read_config_file(const char* config_file, int force)
 			if (force || !domain_file) {
 				if (domain_file) free(domain_file);
 				domain_file = strdup(value);
+			}
+		}
+		else if (strcmp(name, "fallback_no_proxy") == 0 && strlen(value)) {
+			if (force || fallback_no_proxy == -2) {
+				fallback_no_proxy = is_true_val(value);
 			}
 		}
 		else {
