@@ -3370,8 +3370,8 @@ static int tcp_recv(sock_t sock, char * buf, int buflen)
 		return 0;
 	}
 	else if (nread == 0) {
-		loge("tcp_recv(): connection closed by peer\n");
-		return -1;
+		logd("tcp_recv(): connection closed by peer\n");
+		return -2;
 	}
 	else {
 		logd("tcp_recv(): recv %d bytes\n", nread);
@@ -3387,9 +3387,11 @@ static int handle_recv(conn_t* conn)
 
 	nread = tcp_recv(conn->sock, buffer, sizeof(buffer));
 
-	if (nread == -1) {
-		loge("handle_recv() error - %s\n",
+	if (nread < 0) {
+		if (nread == -1) {
+			loge("handle_recv() error - %s\n",
 				conn->host ? conn->host : conn->url.array);
+		}
 		return -1;
 	}
 
@@ -3803,9 +3805,11 @@ static int proxy_recv(conn_t* conn)
 
 	nread = tcp_recv(conn->rsock, s->array + s->pos, s->cap - s->pos - 1);
 
-	if (nread == -1) {
-		loge("proxy_recv() error - %s\n",
+	if (nread < 0) {
+		if (nread == -1) {
+			loge("proxy_recv() error - %s\n",
 				conn->host ? conn->host : conn->url.array);
+		}
 		return -1;
 	}
 
@@ -3840,9 +3844,11 @@ static int handle_rrecv(conn_t* conn)
 
 	nread = tcp_recv(conn->rsock, buffer, sizeof(buffer));
 
-	if (nread == -1) {
-		loge("handle_rrecv() error - %s\n",
+	if (nread < 0) {
+		if (nread == -1) {
+			loge("handle_rrecv() error - %s\n",
 				conn->host ? conn->host : conn->url.array);
+		}
 		return -1;
 	}
 
