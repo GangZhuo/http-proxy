@@ -3057,15 +3057,15 @@ static int select_proxy(conn_t* conn, int min_proxy_index)
 	if (fallback_no_proxy) {
 		conn->by_proxy = FALSE;
 		conn->by_pass = TRUE;
-		logw("select_proxy(): no more %s proxy, fallback to no proxy %s %s\n",
+		logw("select_proxy(): no more %s proxy, fallback to no proxy %s\n",
 				family == AF_INET ? "IPv4" : "IPv6",
-				conn->host, conn->url.array);
+				conn->host ? conn->host : conn->url.array);
 		return 0;
 	}
 	else {
-		loge("select_proxy() error: no more %s proxy %s %s\n",
+		loge("select_proxy() error: no more %s proxy %s\n",
 				family == AF_INET ? "IPv4" : "IPv6",
-				conn->host, conn->url.array);
+				conn->host ? conn->host : conn->url.array);
 		return -1;
 	}
 }
@@ -3160,8 +3160,8 @@ static int do_connect(conn_t *conn, int min_proxy_index)
 		conn->by_proxy = by_proxy(conn);
 		conn->by_pass = !conn->by_proxy;
 		if (conn->by_proxy && select_proxy(conn, min_proxy_index)) {
-			loge("do_connect() error: no supported proxy %s %s\n",
-				conn->host, conn->url.array);
+			loge("do_connect() error: no supported proxy %s\n",
+				conn->host ? conn->host : conn->url.array);
 			return -1;
 		}
 	}
@@ -3169,14 +3169,16 @@ static int do_connect(conn_t *conn, int min_proxy_index)
 	if (conn->by_proxy && conn->proxy_index >= 0) {
 		r = connect_proxy(conn->proxy_index, conn);
 		if (r != 0) {
-			loge("do_connect() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
+			loge("do_connect() error: connect proxy failed %s\n",
+					conn->host ? conn->host : conn->url.array);
 			return -1;
 		}
 	}
 	else {
 		r = connect_target(conn);
 		if (r != 0) {
-			loge("do_connect() error: connect remote failed %s %s\n", conn->host, conn->url.array);
+			loge("do_connect() error: connect remote failed %s\n",
+					conn->host ? conn->host : conn->url.array);
 			return -1;
 		}
 	}
@@ -3190,7 +3192,8 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 	int r;
 
 	if (!addr) {
-		loge("on_got_remote_addr() error: get remote address failed %s %s\n", conn->host, conn->url.array);
+		loge("on_got_remote_addr() error: get remote address failed %s\n",
+				conn->host ? conn->host : conn->url.array);
 		close_conn(conn);
 		return;
 	}
@@ -3201,7 +3204,8 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		host, port);
 
 	if (is_forbidden(addr)) {
-		loge("on_got_remote_addr() error: forbidden %s %s\n", conn->host, conn->url.array);
+		loge("on_got_remote_addr() error: forbidden %s\n",
+				conn->host ? conn->host : conn->url.array);
 		close_conn(conn);
 		return;
 	}
@@ -3220,7 +3224,8 @@ static int connect_remote(conn_t* conn)
 	sockaddr_t* addr = &conn->raddr;
 
 	if (get_remote_host_and_port(&host, &port, conn)) {
-		loge("connect_remote() error: no 'host' and 'port' %s %s\n", conn->host, conn->url.array);
+		loge("connect_remote() error: no 'host' and 'port' %s\n",
+				conn->host ? conn->host : conn->url.array);
 		close_conn(conn);
 		return -1;
 	}
@@ -3233,36 +3238,43 @@ static int connect_remote(conn_t* conn)
 		if (domain->proxy_index >= 0) {
 			conn->by_proxy = TRUE;
 			conn->by_pass = FALSE;
-			logd("[domain] %s/%d by proxy %s %s\n",
-					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+			logd("[domain] %s/%d by proxy %s\n",
+					domain->domain, domain->proxy_index,
+					conn->host ? conn->host : conn->url.array);
 			if (connect_proxy(MIN(domain->proxy_index, proxy_num - 1), conn)) {
-				loge("connect_remote() error: connect proxy failed %s %s\n", conn->host, conn->url.array);
+				loge("connect_remote() error: connect proxy failed %s\n",
+						conn->host ? conn->host : conn->url.array);
 				close_conn(conn);
 				return -1;
 			}
 			return 0;
 		}
 		else if (domain->proxy_index == DOMAIN_FORBIDDEN) {
-			logd("[domain] %s/%d forbidden %s %s\n",
-					domain->domain, domain->proxy_index, conn->host, conn->url.array);
-			loge("connect_remote() error: forbidden %s %s\n", conn->host, conn->url.array);
+			logd("[domain] %s/%d forbidden %s\n",
+					domain->domain, domain->proxy_index,
+					conn->host ? conn->host : conn->url.array);
+			loge("connect_remote() error: forbidden %s\n",
+					conn->host ? conn->host : conn->url.array);
 			close_conn(conn);
 			return -1;
 		}
 		else if (domain->proxy_index == DOMAIN_BY_PASS) {
 			conn->by_proxy = FALSE;
 			conn->by_pass = TRUE;
-			logd("[domain] %s/%d by pass %s %s\n",
-					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+			logd("[domain] %s/%d by pass %s\n",
+					domain->domain, domain->proxy_index,
+					conn->host ? conn->host : conn->url.array);
 		}
 		else {
-			logw("[domain] %s/%d unknown option, fall back to determine by ip %s %s\n",
-					domain->domain, domain->proxy_index, conn->host, conn->url.array);
+			logw("[domain] %s/%d unknown option, fall back to determine by ip %s\n",
+					domain->domain, domain->proxy_index,
+					conn->host ? conn->host : conn->url.array);
 		}
 	}
 
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
-		loge("connect_remote() error: get remote address failed %s %s\n", conn->host, conn->url.array);
+		loge("connect_remote() error: get remote address failed %s\n",
+				conn->host ? conn->host : conn->url.array);
 		close_conn(conn);
 		return -1;
 	}
@@ -3375,8 +3387,11 @@ static int handle_recv(conn_t* conn)
 
 	nread = tcp_recv(conn->sock, buffer, sizeof(buffer));
 
-	if (nread == -1)
+	if (nread == -1) {
+		loge("handle_recv() error - %s\n",
+				conn->host ? conn->host : conn->url.array);
 		return -1;
+	}
 
 	if (nread == 0)
 		return 0;
@@ -3788,8 +3803,11 @@ static int proxy_recv(conn_t* conn)
 
 	nread = tcp_recv(conn->rsock, s->array + s->pos, s->cap - s->pos - 1);
 
-	if (nread == -1)
+	if (nread == -1) {
+		loge("proxy_recv() error - %s\n",
+				conn->host ? conn->host : conn->url.array);
 		return -1;
+	}
 
 	if (nread == 0)
 		return 0; /* EAGAIN */
@@ -3822,8 +3840,11 @@ static int handle_rrecv(conn_t* conn)
 
 	nread = tcp_recv(conn->rsock, buffer, sizeof(buffer));
 
-	if (nread == -1)
+	if (nread == -1) {
+		loge("handle_rrecv() error - %s\n",
+				conn->host ? conn->host : conn->url.array);
 		return -1;
+	}
 
 	if (nread == 0)
 		return 0;
