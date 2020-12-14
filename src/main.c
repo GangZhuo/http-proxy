@@ -3370,7 +3370,7 @@ static int tcp_recv(sock_t sock, char * buf, int buflen)
 		return 0;
 	}
 	else if (nread == 0) {
-		logd("tcp_recv(): connection closed by peer\n");
+		loge("tcp_recv(): connection closed by peer\n");
 		return -1;
 	}
 	else {
