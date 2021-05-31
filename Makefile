@@ -25,8 +25,17 @@ http-proxy: src/main.o $(OBJS)
 %.o: %.c
 	$(CC) -o $@ -c $< $(CFLAGS)
 
+.PHONY : install
+install:
+	-rm /usr/local/bin/http-proxy
+	cp ./http-proxy /usr/local/bin
+
+.PHONY : uninstall
+uninstall:
+	rm /usr/local/bin/http-proxy
+
 .PHONY: clean
 clean:
-	-rm -f src/*.o http-proxy
+	-rm -f http-parser/*.o rbtree/*.o src/*.o http-proxy
 
 
