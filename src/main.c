@@ -3928,9 +3928,17 @@ static int do_loop()
 		if (!running) break;
 
 		if (select(max_fd + 1, &readset, &writeset, &errorset, &timeout) == -1) {
-			loge("select() error: errno=%d, %s \n",
-				errno, strerror(errno));
-			return -1;
+			if (errno == EINTR) {
+				logd("select(): errno=%d, %s \n", errno, strerror(errno));
+				if (!running)
+					break;
+				continue;
+			}
+			else {
+				loge("select() error: errno=%d, %s \n",
+					errno, strerror(errno));
+				return -1;
+			}
 		}
 
 		if (!running) break;
