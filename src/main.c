@@ -73,9 +73,7 @@ typedef int sock_t;
 #include "dnscache.h"
 #include "base64url.h"
 #include "domain_dic.h"
-
-#define PROGRAM_NAME    "http-proxy"
-#define PROGRAM_VERSION "0.0.1"
+#include "version.h"
 
 #define DEFAULT_LISTEN_ADDR "0.0.0.0"
 #define DEFAULT_LISTEN_PORT "1080"
