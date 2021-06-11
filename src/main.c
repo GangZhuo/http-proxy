@@ -774,7 +774,8 @@ static int setnodelay(sock_t sock)
 
 static int getsockerr(sock_t sock)
 {
-	int err = 0, len = sizeof(int);
+	int err = 0;
+	socklen_t len = sizeof(socklen_t);
 	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&err, &len) < 0)
 		return errno;
 	return err;
