@@ -341,7 +341,14 @@ static struct ares_options a_options = { 0 };
 #define get_conn_proxyname(conn) \
 	get_sockaddrname(&get_proxyinfo((conn)->proxy_index)->addr)
 
+static int handle_write(conn_t* conn);
+static int handle_recv(conn_t* conn);
+static int handle_rwrite(conn_t* conn);
+static int handle_rrecv(conn_t* conn);
 static int connect_proxy(int proxy_index, conn_t* conn);
+static int proxy_handshake(conn_t* conn);
+static int proxy_recv(conn_t* conn);
+static int proxy_write(conn_t* conn);
 
 static char* ltrim(char* s)
 {
@@ -2473,15 +2480,18 @@ static int remove_dnscache(conn_t* conn)
 	return 0;
 }
 
-static int on_remote_connected(conn_t* conn)
+static int on_remote_connected(conn_t* conn, int reuse)
 {
 	http_parser* parser = &conn->parser;
 
-	logi("remote connected - %s:%s -  %s (%lu ms)\n",
+	logi("%s - %s:%s -  %s (%lu ms)\n",
+		reuse ? "reuse remote connection" : "remote connected",
 		conn->rhost,
 		conn->rport,
 		get_sockaddrname(&conn->raddr),
 		OS_GetTickCount() - conn->tm_start);
+
+	conn->is_remote_connected = 1;
 
 	if (conn->mode == pm_tunnel) {
 		if (stream_appendf(&conn->ws, "HTTP/%d.%d 200 Connection Established\r\n\r\n",
@@ -2491,20 +2501,17 @@ static int on_remote_connected(conn_t* conn)
 			return -1;
 		}
 		conn->is_first_response = 2;
+
+		logd("\nws:\n%s\n", conn->ws.array);
+		logd("\nrws:\n%s\n", conn->rws.array);
+
+		return handle_write(conn);
 	}
 	else {
 		conn->is_first_response = 1;
+		return handle_rwrite(conn);
 	}
-
-	logd("\nws:\n%s\n", conn->ws.array);
-	logd("\nrws:\n%s\n", conn->rws.array);
-
-	conn->is_remote_connected = 1;
-
-	return 0;
 }
-
-static int proxy_handshake(conn_t *conn);
 
 static int on_proxy_connected(conn_t* conn)
 {
@@ -2600,9 +2607,8 @@ static int handle_write(conn_t* conn)
 		conn->is_first_response = 1;
 	}
 	else if (conn->is_first_response) {
-		logi("recv first response - %s:%s (%lu ms)\n",
-			conn->rhost,
-			conn->rport,
+		logi("recv first response - %s (%lu ms)\n",
+			conn->url.array,
 			OS_GetTickCount() - conn->tm_start);
 		conn->is_first_response = 0;
 	}
@@ -2957,7 +2963,7 @@ static int connect_target(conn_t* conn)
 	}
 
 	if (conn->status == cs_connected) {
-		if (on_remote_connected(conn)) {
+		if (on_remote_connected(conn, 0)) {
 			return -1;
 		}
 	}
@@ -3240,9 +3246,11 @@ static int on_headers_complete(http_parser* parser)
 			return -1;
 		}
 		conn->mode = pm_proxy;
+		conn->is_first_response = 1;
 	}
 	else {
 		conn->mode = pm_tunnel;
+		conn->is_first_response = 0;
 	}
 
 	if (!conn->rsock) {
@@ -3250,7 +3258,7 @@ static int on_headers_complete(http_parser* parser)
 			return -1;
 	}
 	else {
-		conn->is_first_response = 1;
+		return on_remote_connected(conn, 1);
 	}
 
 	return 0;
@@ -3491,7 +3499,7 @@ static int socks5_handshake3(conn_t* conn)
 		conn->proxy = NULL;
 		logd("socks5_handshake3(): socks5 handshaked (%lu ms)\n",
 				OS_GetTickCount() - conn->tm_start);
-		return on_remote_connected(conn);
+		return on_remote_connected(conn, 0);
 	}
 	else {
 		loge("socks5_handshake3() error: reject by proxy server\n");
@@ -3532,7 +3540,7 @@ static int socks5_handshake2(conn_t* conn)
 	conn->proxy->rs.size = 0;
 	conn->proxy->status = ps_handshake1;
 
-	return 0;
+	return proxy_write(conn);
 
   err:
 	return -1;
@@ -3567,7 +3575,7 @@ static int socks5_handshake0(conn_t *conn)
 	conn->proxy->rs.size = 0;
 	conn->proxy->status = ps_handshake0;
 
-	return 0;
+	return proxy_write(conn);
 }
 
 static int socks5_handshake(conn_t *conn)
@@ -3631,7 +3639,7 @@ static int hp_handshake1(conn_t *conn)
 		conn->proxy = NULL;
 		logd("hp_handshake1(): http proxy handshaked (%lu ms)\n",
 				OS_GetTickCount() - conn->tm_start);
-		return on_remote_connected(conn);
+		return on_remote_connected(conn, 0);
 	}
 	else if (http_code != 0 && http_code != 200) {
 		if (loglevel >= LOG_DEBUG) {
@@ -3707,7 +3715,7 @@ static int hp_handshake0(conn_t *conn)
 	conn->proxy->rs.size = 0;
 	conn->proxy->status = ps_handshake0;
 
-	return 0;
+	return proxy_write(conn);
 }
 
 static int hp_handshake(conn_t *conn)
@@ -4022,7 +4030,7 @@ static int do_loop()
 								if (conn->by_proxy)
 									r = on_proxy_connected(conn);
 								else
-									r = on_remote_connected(conn);
+									r = on_remote_connected(conn, 0);
 							}
 						}
 						if (!r) {
