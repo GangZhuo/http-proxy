@@ -272,6 +272,7 @@ struct conn_t {
 #ifdef ASYN_DNS
 	a_state_t* a_state;
 #endif
+	unsigned long tm_start;
 };
 
 static char* listen_addr = NULL;
@@ -393,6 +394,17 @@ static int startwith(const char* s, const char* needle)
 	return TRUE;
 }
 
+static unsigned long OS_GetTickCount()
+{
+#ifdef WINDOWS
+	return clock();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+#endif
+}
+
 #ifdef ASYN_DNS
 
 static int init_ares()
@@ -466,7 +478,7 @@ static a_state_t* a_new_state(sockaddr_t* addr, char* host, char* port,
 	st->conn = conn;
 	st->cb = cb;
 	conn->a_state = st;
-	logd("a_new_state()\n");
+	logv("a_new_state()\n");
 	return st;
 }
 
@@ -479,7 +491,7 @@ static void a_free_state(a_state_t* st)
 		free(st->host);
 		free(st->port);
 		free(st);
-		logd("a_free_state()\n");
+		logv("a_free_state()\n");
 	}
 }
 
@@ -1278,9 +1290,6 @@ static int check_args()
 	if (dns_timeout == -1) {
 		dns_timeout = DEFAULT_DNS_TIMEOUT;
 	}
-	if (loglevel >= LOG_DEBUG) {
-		logflags = LOG_MASK_RAW;
-	}
 	return 0;
 }
 
@@ -1948,6 +1957,7 @@ static conn_t* new_conn(sock_t sock, listen_t* listen)
 
 	conn->sock = sock;
 	conn->listen = listen;
+	conn->tm_start = OS_GetTickCount();
 
 	http_parser_init(&conn->parser, HTTP_REQUEST);
 
@@ -2462,10 +2472,11 @@ static int on_remote_connected(conn_t* conn)
 {
 	http_parser* parser = &conn->parser;
 
-	logd("connected %s %s:%s\n",
+	logd("connected %s %s:%s (%lu ms)\n",
 		get_sockaddrname(&conn->raddr),
 		conn->rhost,
-		conn->rport);
+		conn->rport,
+		OS_GetTickCount() - conn->tm_start);
 
 	if (conn->mode == pm_tunnel) {
 		if (stream_appendf(&conn->ws, "HTTP/%d.%d 200 Connection Established\r\n\r\n",
@@ -2479,6 +2490,8 @@ static int on_remote_connected(conn_t* conn)
 	logd("\nws:\n%s\n", conn->ws.array);
 	logd("\nrws:\n%s\n", conn->rws.array);
 
+	conn->tm_start = OS_GetTickCount();
+
 	return 0;
 }
 
@@ -2486,7 +2499,7 @@ static int proxy_handshake(conn_t *conn);
 
 static int on_proxy_connected(conn_t* conn)
 {
-	logd("proxy connected\n");
+	logd("proxy connected (%lu ms)\n", OS_GetTickCount() - conn->tm_start);
 	conn->proxy->status = ps_none;
 	return proxy_handshake(conn);
 }
@@ -2580,7 +2593,8 @@ static int handle_write(conn_t* conn)
 
 	conn->tx += nsend;
 
-	logd("handle_write(): write to %s\n", get_sockname(sock));
+	logd("handle_write(): write to %s (%lu ms)\n",
+			get_sockname(sock), OS_GetTickCount() - conn->tm_start);
 
 	if (conn->status == cs_rsp_closing) {
 		close_after(conn, 3);
@@ -2659,6 +2673,7 @@ static int on_message_begin(http_parser* parser)
 	stream_reset(&conn->field.value);
 	conn->field.status = fs_none;
 	conn->is_first_line = TRUE;
+	conn->tm_start = OS_GetTickCount();
 	return 0;
 }
 
@@ -3054,6 +3069,7 @@ static int do_connect(conn_t *conn, int min_proxy_index)
 		}
 	}
 
+	conn->tm_start = OS_GetTickCount();
 	if (conn->by_proxy && conn->proxy_index >= 0) {
 		r = connect_proxy(conn->proxy_index, conn);
 		if (r != 0) {
@@ -3086,10 +3102,11 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
-	logd("on_got_remote_addr(): %s%s - %s:%s\n",
+	logd("on_got_remote_addr(): %s%s - %s:%s (%lu ms)\n",
 		get_sockaddrname(addr),
 		hit_cache ? " (cache)" : "",
-		host, port);
+		host, port,
+		OS_GetTickCount() - conn->tm_start);
 
 	if (is_forbidden(addr)) {
 		loge("on_got_remote_addr() error: forbidden %s\n",
@@ -3098,6 +3115,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
+	conn->tm_start = OS_GetTickCount();
 	r = do_connect(conn, 0);
 	if (r != 0) {
 		close_conn(conn);
@@ -3119,8 +3137,11 @@ static int connect_remote(conn_t* conn)
 	}
 
 	/* if proxy is specified, first to determine the proxy base on the domain name */
-	if (proxy_num > 0)
+	if (proxy_num > 0) {
+		unsigned long tm = OS_GetTickCount();
 		domain = domain_dic_lookup(&domains, host);
+		logd("domain_dic_lookup %lu ms\n", OS_GetTickCount() - tm);
+	}
 
 	if (domain) {
 		if (domain->proxy_index >= 0) {
@@ -3129,6 +3150,7 @@ static int connect_remote(conn_t* conn)
 			logd("[domain] %s/%d by proxy %s\n",
 					domain->domain, domain->proxy_index,
 					conn->host ? conn->host : conn->url.array);
+			conn->tm_start = OS_GetTickCount();
 			if (connect_proxy(MIN(domain->proxy_index, proxy_num - 1), conn)) {
 				loge("connect_remote() error: connect proxy failed %s\n",
 						conn->host ? conn->host : conn->url.array);
@@ -3160,6 +3182,7 @@ static int connect_remote(conn_t* conn)
 		}
 	}
 
+	conn->tm_start = OS_GetTickCount();
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s\n",
 				conn->host ? conn->host : conn->url.array);
@@ -3182,7 +3205,9 @@ static int on_headers_complete(http_parser* parser)
 		detect_first_line_complete(parser);
 	}
 
-	logd("on_headers_complete(): keep_alive=%d\n", http_should_keep_alive(parser));
+	logd("on_headers_complete(): keep_alive=%d (%lu ms)\n",
+			http_should_keep_alive(parser),
+			OS_GetTickCount() - conn->tm_start);
 
 	if (parser->method != HTTP_CONNECT) {
 		if (stream_appendf(&conn->rws, "\r\n") == -1) {
@@ -3195,6 +3220,7 @@ static int on_headers_complete(http_parser* parser)
 		conn->mode = pm_tunnel;
 	}
 
+	conn->tm_start = OS_GetTickCount();
 	if (!conn->rsock) {
 		if (connect_remote(conn))
 			return -1;
@@ -3239,7 +3265,8 @@ static int on_chunk_complete(http_parser* parser)
 static int on_message_complete(http_parser* parser)
 {
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
-	logd("on_message_complete()\n");
+	logd("on_message_complete() (%lu ms)\n",
+			OS_GetTickCount() - conn->tm_start);
 	return 0;
 }
 
@@ -3431,7 +3458,8 @@ static int socks5_handshake3(conn_t* conn)
 	if (buflen >= 10 && buf[0] == 0x5 && buf[3] == 0x1) {
 		free(conn->proxy);
 		conn->proxy = NULL;
-		logd("socks5_handshake3(): socks5 handshaked\n");
+		logd("socks5_handshake3(): socks5 handshaked (%lu ms)\n",
+				OS_GetTickCount() - conn->tm_start);
 		return on_remote_connected(conn);
 	}
 	else {
@@ -3570,7 +3598,8 @@ static int hp_handshake1(conn_t *conn)
 	if (http_code == 200) {
 		free(conn->proxy);
 		conn->proxy = NULL;
-		logd("hp_handshake1(): http proxy handshaked\n");
+		logd("hp_handshake1(): http proxy handshaked (%lu ms)\n",
+				OS_GetTickCount() - conn->tm_start);
 		return on_remote_connected(conn);
 	}
 	else if (http_code != 0 && http_code != 200) {
