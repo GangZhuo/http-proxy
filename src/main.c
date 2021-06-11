@@ -305,9 +305,6 @@ static char *domain_file = NULL;
 static int fallback_no_proxy = -2; /* TRUE|FALSE, -2 mean do not set */
 
 static int running = 0;
-static int is_use_syslog = 0;
-static int is_use_logfile = 0;
-static const char* current_log_file = NULL;
 static listen_t listens[MAX_LISTEN] = { 0 };
 static int listen_num = 0;
 static dllist_t conns = DLLIST_INIT(conns);
@@ -406,104 +403,6 @@ static int startwith(const char* s, const char* needle)
 	}
 
 	return TRUE;
-}
-
-static void syslog_writefile(int mask, const char* fmt, va_list args)
-{
-	char buf[8 * 1024], buf2[8 * 1024];
-	int len;
-	int level = log_level_comp(mask);
-	char date[32];
-	const char* extra_msg;
-	time_t now;
-
-	memset(buf, 0, sizeof(buf));
-	len = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
-
-	now = time(NULL);
-
-	strftime(date, sizeof(date), LOG_TIMEFORMAT, localtime(&now));
-	extra_msg = log_priorityname(level);
-
-	memset(buf2, 0, sizeof(buf2));
-
-	if (extra_msg && strlen(extra_msg)) {
-		len = snprintf(buf2, sizeof(buf2) - 1, "%s [%s] %s", date, extra_msg, buf);
-	}
-	else {
-		len = snprintf(buf2, sizeof(buf2) - 1, "%s %s", date, buf);
-	}
-
-	if (len > 0) {
-		FILE* pf;
-		pf = fopen(current_log_file, "a+");
-		if (pf) {
-			fwrite(buf2, 1, len, pf);
-			fclose(pf);
-		}
-		else {
-			printf("cannot open %s\n", current_log_file);
-		}
-	}
-}
-
-static void syslog_vprintf(int mask, const char* fmt, va_list args)
-{
-#ifdef WINDOWS
-	logw("syslog_vprintf(): not implemented in Windows port");
-#else
-	char buf[8 * 1024];
-	int priority = log_level_comp(mask);
-
-	memset(buf, 0, sizeof(buf));
-	vsnprintf(buf, sizeof(buf) - 1, fmt, args);
-	syslog(priority, "%s", buf);
-#endif
-}
-
-static void open_logfile(const char *log_file)
-{
-	if (log_file && *log_file) {
-		current_log_file = log_file;
-		log_vprintf = syslog_writefile;
-		log_vprintf_with_timestamp = syslog_writefile;
-		is_use_logfile = 1;
-	}
-}
-
-static void close_logfile()
-{
-	if (is_use_logfile) {
-		log_vprintf = log_default_vprintf;
-		log_vprintf_with_timestamp = log_default_vprintf_with_timestamp;
-		is_use_logfile = 0;
-	}
-}
-
-static void open_syslog()
-{
-#ifdef WINDOWS
-	logw("use_syslog(): not implemented in Windows port");
-#else
-	openlog(PROGRAM_NAME, LOG_CONS | LOG_PID, LOG_DAEMON);
-	is_use_syslog = 1;
-	log_vprintf = syslog_vprintf;
-	log_vprintf_with_timestamp = syslog_vprintf;
-#endif
-}
-
-static void close_syslog()
-{
-#ifdef WINDOWS
-	logw("close_syslog(): not implemented in Windows port");
-#else
-	if (is_use_syslog) {
-		is_use_syslog = 0;
-		log_vprintf = log_default_vprintf;
-		log_vprintf_with_timestamp = log_default_vprintf_with_timestamp;
-		closelog();
-	}
-#endif
 }
 
 #ifdef ASYN_DNS
@@ -4231,7 +4130,7 @@ static void run_as_daemonize()
 	umask(0);
 
 	if (!log_file || !(*log_file)) {
-		open_syslog();
+		open_syslog(PROGRAM_NAME);
 	}
 
 	sid = setsid();
@@ -4269,15 +4168,11 @@ int main(int argc, char** argv)
 {
 #ifdef WINDOWS
 	win_init();
+	log_init();
 #endif
 
 	if (parse_args(argc, argv) != 0)
 		return EXIT_FAILURE;
-
-	if (daemonize) {
-		run_as_daemonize();
-		return EXIT_SUCCESS;
-	}
 
 #ifdef WINDOWS
 	if (0 == SetConsoleCtrlHandler((PHANDLER_ROUTINE)sig_handler, TRUE)) {
@@ -4288,6 +4183,11 @@ int main(int argc, char** argv)
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 #endif
+
+	if (daemonize) {
+		run_as_daemonize();
+		return EXIT_SUCCESS;
+	}
 
 	if (init_proxy_server() != 0)
 		return EXIT_FAILURE;
