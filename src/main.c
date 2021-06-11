@@ -24,22 +24,12 @@ typedef SOCKET sock_t;
 #ifdef WIN64
 
 #include "../windows/c-ares/x64/include/ares.h"
-
-#ifdef NDEBUG
 #pragma comment(lib,"../windows/c-ares/x64/lib/cares.lib")
-#else
-#pragma comment(lib,"../windows/c-ares/x64/lib/caresd.lib")
-#endif
 
 #else /* else WIN64 */
 
 #include "../windows/c-ares/x86/include/ares.h"
-
-#ifdef NDEBUG
 #pragma comment(lib,"../windows/c-ares/x86/lib/cares.lib")
-#else
-#pragma comment(lib,"../windows/c-ares/x86/lib/caresd.lib")
-#endif
 
 #endif /* endif WIN64 */
 
