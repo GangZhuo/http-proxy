@@ -200,7 +200,7 @@ typedef struct ip_t {
 
 struct sockaddr_t {
 	struct sockaddr_storage addr;
-	int addrlen;
+	socklen_t addrlen;
 };
 
 typedef struct proxy_t {
@@ -2194,11 +2194,11 @@ static void uninit_proxy_server()
 		dllist_init(&conns);
 	}
 
-	if (is_use_logfile) {
+	if (is_use_logfile()) {
 		close_logfile();
 	}
 
-	if (is_use_syslog) {
+	if (is_use_syslog()) {
 		close_syslog();
 	}
 
