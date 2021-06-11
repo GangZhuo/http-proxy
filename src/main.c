@@ -88,7 +88,10 @@ typedef int sock_t;
 #define BUF_SIZE 4096
 #endif
 #ifndef MAX_HEADER_SIZE
-#define MAX_HEADER_SIZE (1024 * 1024) /* 1MB */
+#define MAX_HEADER_SIZE (1 * 1024 * 1024) /* 1 MiB */
+#endif
+#ifndef MAX_BUF_SIZE
+#define MAX_BUF_SIZE (2 * 1024 * 1024) /* 2 MiB */
 #endif
 #ifndef MAX_PROXY
 #define MAX_PROXY 8
@@ -273,6 +276,8 @@ struct conn_t {
 	a_state_t* a_state;
 #endif
 	unsigned long tm_start;
+	int is_first_response;
+	int is_remote_connected;
 };
 
 static char* listen_addr = NULL;
@@ -2472,10 +2477,10 @@ static int on_remote_connected(conn_t* conn)
 {
 	http_parser* parser = &conn->parser;
 
-	logd("connected %s %s:%s (%lu ms)\n",
-		get_sockaddrname(&conn->raddr),
+	logi("remote connected - %s:%s -  %s (%lu ms)\n",
 		conn->rhost,
 		conn->rport,
+		get_sockaddrname(&conn->raddr),
 		OS_GetTickCount() - conn->tm_start);
 
 	if (conn->mode == pm_tunnel) {
@@ -2485,12 +2490,16 @@ static int on_remote_connected(conn_t* conn)
 			loge("on_remote_connected() error: stream_appendf()");
 			return -1;
 		}
+		conn->is_first_response = 2;
+	}
+	else {
+		conn->is_first_response = 1;
 	}
 
 	logd("\nws:\n%s\n", conn->ws.array);
 	logd("\nrws:\n%s\n", conn->rws.array);
 
-	conn->tm_start = OS_GetTickCount();
+	conn->is_remote_connected = 1;
 
 	return 0;
 }
@@ -2499,7 +2508,10 @@ static int proxy_handshake(conn_t *conn);
 
 static int on_proxy_connected(conn_t* conn)
 {
-	logd("proxy connected (%lu ms)\n", OS_GetTickCount() - conn->tm_start);
+	logi("proxy[%d] connected - %s:%s (%lu ms)\n",
+		conn->proxy_index,
+		conn->rhost, conn->rport,
+		OS_GetTickCount() - conn->tm_start);
 	conn->proxy->status = ps_none;
 	return proxy_handshake(conn);
 }
@@ -2582,6 +2594,18 @@ static int handle_write(conn_t* conn)
 	sock_t sock = conn->sock;
 	stream_t* s = &conn->ws;
 	int nsend;
+
+	if (conn->is_first_response == 2) {
+		/* sending the response for CONNECT method */
+		conn->is_first_response = 1;
+	}
+	else if (conn->is_first_response) {
+		logi("recv first response - %s:%s (%lu ms)\n",
+			conn->rhost,
+			conn->rport,
+			OS_GetTickCount() - conn->tm_start);
+		conn->is_first_response = 0;
+	}
 
 	nsend = tcp_send(sock, s);
 
@@ -2674,6 +2698,7 @@ static int on_message_begin(http_parser* parser)
 	conn->field.status = fs_none;
 	conn->is_first_line = TRUE;
 	conn->tm_start = OS_GetTickCount();
+	conn->is_first_response = 0;
 	return 0;
 }
 
@@ -2922,10 +2947,10 @@ static int connect_target(conn_t* conn)
 {
 	sockaddr_t* addr = &conn->raddr;
 
-	logi("direct connect %s - %s:%s\n",
-		get_sockaddrname(addr),
+	logi("direct connecting - %s:%s - %s\n",
 		conn->rhost,
-		conn->rport);
+		conn->rport,
+		get_sockaddrname(addr));
 
 	if (connect_addr(addr, &conn->rsock, &conn->status)) {
 		return -1;
@@ -2995,11 +3020,11 @@ static int connect_proxy(int proxy_index, conn_t* conn)
 {
 	int r;
 
-	logi("proxy(#%d) connect %s - %s:%s\n",
+	logi("proxy[%d] connecting - %s:%s - %s\n",
 		proxy_index,
-		get_sockaddrname(&conn->raddr),
 		conn->rhost,
-		conn->rport);
+		conn->rport,
+		get_sockaddrname(&conn->raddr));
 
 	conn->by_proxy = TRUE;
 	conn->by_pass = FALSE;
@@ -3069,7 +3094,6 @@ static int do_connect(conn_t *conn, int min_proxy_index)
 		}
 	}
 
-	conn->tm_start = OS_GetTickCount();
 	if (conn->by_proxy && conn->proxy_index >= 0) {
 		r = connect_proxy(conn->proxy_index, conn);
 		if (r != 0) {
@@ -3102,10 +3126,10 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
-	logd("on_got_remote_addr(): %s%s - %s:%s (%lu ms)\n",
+	logi("domain resloved - %s:%s - %s%s (%lu ms)\n",
+		host, port,
 		get_sockaddrname(addr),
 		hit_cache ? " (cache)" : "",
-		host, port,
 		OS_GetTickCount() - conn->tm_start);
 
 	if (is_forbidden(addr)) {
@@ -3115,7 +3139,6 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 		return;
 	}
 
-	conn->tm_start = OS_GetTickCount();
 	r = do_connect(conn, 0);
 	if (r != 0) {
 		close_conn(conn);
@@ -3136,6 +3159,10 @@ static int connect_remote(conn_t* conn)
 		return -1;
 	}
 
+	logi("%s %s:%s\n",
+		http_method_str(conn->parser.method),
+		host, port);
+
 	/* if proxy is specified, first to determine the proxy base on the domain name */
 	if (proxy_num > 0) {
 		unsigned long tm = OS_GetTickCount();
@@ -3150,7 +3177,6 @@ static int connect_remote(conn_t* conn)
 			logd("[domain] %s/%d by proxy %s\n",
 					domain->domain, domain->proxy_index,
 					conn->host ? conn->host : conn->url.array);
-			conn->tm_start = OS_GetTickCount();
 			if (connect_proxy(MIN(domain->proxy_index, proxy_num - 1), conn)) {
 				loge("connect_remote() error: connect proxy failed %s\n",
 						conn->host ? conn->host : conn->url.array);
@@ -3182,7 +3208,6 @@ static int connect_remote(conn_t* conn)
 		}
 	}
 
-	conn->tm_start = OS_GetTickCount();
 	if (get_remote_addr(addr, conn, on_got_remote_addr)) {
 		loge("connect_remote() error: get remote address failed %s\n",
 				conn->host ? conn->host : conn->url.array);
@@ -3220,10 +3245,12 @@ static int on_headers_complete(http_parser* parser)
 		conn->mode = pm_tunnel;
 	}
 
-	conn->tm_start = OS_GetTickCount();
 	if (!conn->rsock) {
 		if (connect_remote(conn))
 			return -1;
+	}
+	else {
+		conn->is_first_response = 1;
 	}
 
 	return 0;
@@ -3318,7 +3345,11 @@ static int handle_recv(conn_t* conn)
 	logd("handle_recv(): recv from %s\n", get_sockname(conn->sock));
 
 	if (conn->mode == pm_tunnel) {
-		if (stream_appends(&conn->rws, buffer, nread) == -1) {
+		if (!conn->is_remote_connected) {
+			loge("handle_recv() error: new data received during CONNECT handshake\n");
+			return -1;
+		}
+		else if (stream_appends(&conn->rws, buffer, nread) == -1) {
 			loge("handle_recv() error: stream_appends()\n");
 			return -1;
 		}
@@ -3797,7 +3828,7 @@ static int do_loop()
 	while (running) {
 		struct timeval timeout = {
 			.tv_sec = 0,
-			.tv_usec = 50 * 1000,
+			.tv_usec = 10 * 1000,
 		};
 
 		FD_ZERO(&readset);
@@ -3826,33 +3857,54 @@ static int do_loop()
 			dlitem_t* cur, * nxt;
 			conn_t* conn;
 			int is_local_sending;
+			int is_local_handshaked;
+			int is_local_reading;
 			int is_remote_connected;
 			int is_remote_sending;
 			int is_closing;
+			int is_local_fdset;
 
 			dllist_foreach(&conns, cur, nxt, conn_t, conn, entry) {
 
 				if (!running) break;
 
-				max_fd = MAX(max_fd, conn->sock);
 				is_local_sending = stream_rsize(&conn->ws) > 0;
+
+				is_local_handshaked = conn->mode != ps_none;
+
 				is_remote_connected = conn->rsock > 0 &&
 					conn->status == cs_connected &&
 					!conn->proxy;
+
 				is_remote_sending = conn->rsock > 0 &&
 					(conn->status == cs_connecting ||
 					 (!conn->proxy && stream_rsize(&conn->rws) > 0) ||
 					 (conn->proxy && stream_rsize(&conn->proxy->ws) > 0));
+
 				is_closing = conn->status == cs_closing ||
 					conn->status == cs_rsp_closing;
-				if (is_local_sending)
+
+				is_local_reading = !is_closing &&
+					(!is_local_handshaked || !is_remote_sending) &&
+					conn->rws.size < MAX_BUF_SIZE;
+
+				is_local_fdset = 0;
+
+				if (is_local_sending && conn->status != cs_closing) {
 					FD_SET(conn->sock, &writeset);
-				/* read when request header is not complete,
-				   or remote connection established and not sending data */
-				else if(!is_closing &&
-					(!conn->mode || (is_remote_connected && !is_remote_sending)))
+					is_local_fdset = 1;
+				}
+				else if (is_local_reading) {
 					FD_SET(conn->sock, &readset);
-				FD_SET(conn->sock, &errorset);
+					is_local_fdset = 1;
+				}
+				if (!is_closing) {
+					FD_SET(conn->sock, &errorset);
+					is_local_fdset = 1;
+				}
+				if (is_local_fdset) {
+					max_fd = MAX(max_fd, conn->sock);
+				}
 
 				if (!is_closing && conn->rsock > 0) {
 					max_fd = MAX(max_fd, conn->rsock);
@@ -3904,7 +3956,10 @@ static int do_loop()
 
 				if (!running) break;
 
-				if (FD_ISSET(conn->sock, &errorset)) {
+				if (conn->status == cs_closing) {
+					r = -1;
+				}
+				else if (FD_ISSET(conn->sock, &errorset)) {
 					int err = getsockerr(conn->sock);
 					loge("do_loop(): conn.sock error (%s%s%s%s%s%s%s): errno=%d, %s \n",
 						get_sockname(conn->sock),
