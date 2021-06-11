@@ -4042,21 +4042,33 @@ static void ServiceMain(int argc, char** argv)
 		return;
 	}
 
-	ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-	SetServiceStatus(hStatus, &ServiceStatus);
+	{
+		const char* wd = win_get_exe_path();
+		SetCurrentDirectory(wd);
+		logn("Set working directory: %s\n", wd);
+	}
 
-	if (init_proxy_server() != 0)
-		return;
+	if (init_proxy_server() != 0) {
+		ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+		ServiceStatus.dwServiceSpecificExitCode = ERROR_SERVICE_NOT_ACTIVE;
+		goto exit;
+	}
 
 	print_args();
 
-	if (do_loop() != 0)
-		return;
+	ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+	SetServiceStatus(hStatus, &ServiceStatus);
 
+	if (do_loop() != 0) {
+		ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+		ServiceStatus.dwServiceSpecificExitCode = ERROR_SERVICE_NOT_ACTIVE;
+		goto exit;
+	}
+
+  exit:
 	uninit_proxy_server();
 
 	ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-	ServiceStatus.dwWin32ExitCode = 0;
 	SetServiceStatus(hStatus, &ServiceStatus);
 }
 

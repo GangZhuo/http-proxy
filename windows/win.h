@@ -28,6 +28,8 @@ extern void win_uninit();
 
 const char* win_strerror(int err_code);
 
+const char* win_get_exe_path();
+
 #ifdef __cplusplus
 }
 #endif

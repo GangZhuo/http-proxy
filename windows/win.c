@@ -57,4 +57,13 @@ const char* win_strerror(int err_code)
 	return rtrim(s_errstr);
 }
 
+const char* win_get_exe_path()
+{
+	static char buffer[MAX_PATH] = { 0 };
+	char* p;
+	GetModuleFileName(NULL, buffer, MAX_PATH);
+	p = strrchr(buffer, '\\');
+	*p = '\0';
+	return buffer;
+}
 
