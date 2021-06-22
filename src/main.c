@@ -2416,9 +2416,6 @@ static int get_remote_host_and_port(char** host, char** port, conn_t* conn)
 		}
 	}
 
-	conn->rhost = *host;
-	conn->rport = *port;
-
 	return 0;
 }
 
@@ -2698,6 +2695,7 @@ static int on_message_begin(http_parser* parser)
 	conn_t* conn = dllist_container_of(parser, conn_t, parser);
 	logd("METHOD: %s\n", http_method_str(parser->method));
 	conn->header_size = 0;
+	free(conn->host), conn->host = NULL;
 	stream_reset(&conn->url);
 	stream_reset(&conn->field.name);
 	stream_reset(&conn->field.value);
@@ -3154,7 +3152,7 @@ static void on_got_remote_addr(sockaddr_t* addr, int hit_cache, conn_t* conn,
 
 static int connect_remote(conn_t* conn)
 {
-	char *host, *port;
+	char *host = NULL, *port = NULL;
 	domain_t *domain = NULL;
 	sockaddr_t* addr = &conn->raddr;
 
@@ -3168,6 +3166,34 @@ static int connect_remote(conn_t* conn)
 	logi("%s %s:%s\n",
 		http_method_str(conn->parser.method),
 		host, port);
+
+	if (conn->rsock) {
+		if (strcasecmp(conn->rhost, host) == 0 &&
+				strcasecmp(conn->rport, port) == 0) {
+			free(host);
+			free(port);
+			return on_remote_connected(conn, 1);
+		}
+		else {
+			free(conn->rhost), conn->rhost = NULL;
+			free(conn->rport), conn->rport = NULL;
+			close(conn->rsock), conn->rsock = 0;
+			conn->by_proxy = FALSE;
+			conn->by_pass = FALSE;
+			conn->proxy_index = 0;
+			if (conn->proxy) {
+				stream_free(&conn->proxy->rs);
+				stream_free(&conn->proxy->ws);
+				free(conn->proxy);
+				conn->proxy = NULL;
+			}
+			conn->status = cs_none;
+			logi("close unmatch remote connection %s:%s\n", host, port);
+		}
+	}
+
+	conn->rhost = host;
+	conn->rport = port;
 
 	/* if proxy is specified, first to determine the proxy base on the domain name */
 	if (proxy_num > 0) {
@@ -3253,13 +3279,8 @@ static int on_headers_complete(http_parser* parser)
 		conn->is_first_response = 0;
 	}
 
-	if (!conn->rsock) {
-		if (connect_remote(conn))
-			return -1;
-	}
-	else {
-		return on_remote_connected(conn, 1);
-	}
+	if (connect_remote(conn))
+		return -1;
 
 	return 0;
 }
