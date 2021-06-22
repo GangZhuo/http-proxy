@@ -3175,6 +3175,7 @@ static int connect_remote(conn_t* conn)
 			return on_remote_connected(conn, 1);
 		}
 		else {
+			logi("close unmatch remote connection %s:%s\n", conn->rhost, conn->rport);
 			free(conn->rhost), conn->rhost = NULL;
 			free(conn->rport), conn->rport = NULL;
 			close(conn->rsock), conn->rsock = 0;
@@ -3188,7 +3189,6 @@ static int connect_remote(conn_t* conn)
 				conn->proxy = NULL;
 			}
 			conn->status = cs_none;
-			logi("close unmatch remote connection %s:%s\n", host, port);
 		}
 	}
 

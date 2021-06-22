@@ -21,6 +21,7 @@ extern "C" {
 #define errno WSAGetLastError()
 #define close(fd) closesocket(fd)
 #define strerror(errcode) win_strerror(errcode)
+#define strcasecmp _stricmp
 
 extern void win_init();
 
