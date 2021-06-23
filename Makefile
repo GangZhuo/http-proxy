@@ -1,5 +1,8 @@
 debug = 0
 
+# `2>/dev/null` suppress errors and `|| true` suppress the error codes.
+BUILD_VERSION := $(shell git describe --tags HEAD 2>/dev/null || true)
+
 OBJS = src/base64url.o \
        src/log.o \
        src/stream.o \
@@ -21,6 +24,9 @@ all: http-proxy
 
 http-proxy: src/main.o $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS) $(LIBS) $(MY_LIBS)
+
+src/main.o: src/main.c
+	$(CC) -o $@ -c $< $(CFLAGS) -DPROGRAM_BUILD_VERSION="\"$(BUILD_VERSION)\""
 
 %.o: %.c
 	$(CC) -o $@ -c $< $(CFLAGS)

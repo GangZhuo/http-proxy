@@ -4,4 +4,8 @@
 #define PROGRAM_NAME    "http-proxy"
 #define PROGRAM_VERSION "0.0.5"
 
+#ifndef PROGRAM_BUILD_VERSION
+#define PROGRAM_BUILD_VERSION PROGRAM_VERSION
+#endif
+
 #endif
