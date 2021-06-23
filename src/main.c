@@ -1118,19 +1118,22 @@ static int get_local_ips(ip_t** list)
 
 #endif  /* endif WINDOWS */
 
-static const char *build_version()
+static const char *git_version()
 {
-	const char *v = PROGRAM_BUILD_VERSION;
-	if (!v || !*v) {
-		v = PROGRAM_VERSION;
+	const char *v = GIT_VERSION;
+	if (v && *v) {
+		v = "-" GIT_VERSION;
+	}
+	else {
+		v = "";
 	}
 	return v;
 }
 
 static void usage()
 {
-	printf("\n" PROGRAM_NAME " v" PROGRAM_VERSION " (build version: %s)\n%s\n",
-			build_version(), "\n\
+	printf("\n" PROGRAM_NAME " v" PROGRAM_VERSION "%s\n%s\n",
+			git_version(), "\n\
 Usage:\n\
 \n\
 http-proxy [-b BIND_ADDR] [-p BIND_PORT] [--config=CONFIG_PATH]\n\
@@ -1285,8 +1288,7 @@ static int parse_args(int argc, char** argv)
 			loglevel++;
 			break;
 		case 'V':
-			printf(PROGRAM_NAME " v" PROGRAM_VERSION
-					" (build version: %s)\n", build_version());
+			printf(PROGRAM_NAME " v" PROGRAM_VERSION "%s\n", git_version());
 			exit(0);
 		default:
 			usage();
@@ -1327,8 +1329,7 @@ static void print_args()
 {
 	int i;
 
-	logn(PROGRAM_NAME " v" PROGRAM_VERSION
-			" (build version: %s)\n", build_version());
+	logn(PROGRAM_NAME " v" PROGRAM_VERSION "%s\n", git_version());
 
 	for (i = 0; i < listen_num; i++) {
 		logn("listen on %s\n",

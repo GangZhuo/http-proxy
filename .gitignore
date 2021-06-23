@@ -27,7 +27,6 @@
 *.i*86
 *.x86_64
 *.hex
-http-proxy
 
 # Debug files
 *.dSYM/
@@ -43,4 +42,8 @@ tags
 .clangd
 .cache
 compile_commands.json
+
+# Auto Generate
+http-proxy
+src/build_version.h
 
