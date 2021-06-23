@@ -1317,6 +1317,9 @@ static const char *get_proxy_type_name(int proxy_type)
 static void print_args()
 {
 	int i;
+
+	logn(PROGRAM_NAME " v" PROGRAM_VERSION "\n");
+
 	for (i = 0; i < listen_num; i++) {
 		logn("listen on %s\n",
 			get_sockaddrname(&listens[i].addr));
