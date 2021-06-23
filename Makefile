@@ -1,6 +1,15 @@
 debug = 0
 
-GIT_VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || true)
+GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || true)
+
+ifneq ("$(GIT_HASH)", "")
+    GIT_DIRTY := $(shell git diff --stat 2>/dev/null || true)
+    ifneq ("$(GIT_DIRTY)", "")
+        GIT_VERSION = $(GIT_HASH)-dirty
+    else
+        GIT_VERSION = $(GIT_HASH)
+    endif
+endif
 
 OBJS = src/base64url.o \
        src/log.o \
@@ -15,8 +24,8 @@ CFLAGS += $(MFLAGS) -DASYN_DNS
 MY_LIBS += -lcares
 
 ifneq ($(debug), 0)
-    CFLAGS += -g -DDEBUG -D_DEBUG
-    LDFLAGS += -g
+    CFLAGS += -g -ggdb -DDEBUG -D_DEBUG
+    LDFLAGS += -g -ggdb
 endif
 
 all: http-proxy
@@ -25,7 +34,8 @@ http-proxy: src/main.o $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS) $(LIBS) $(MY_LIBS)
 
 src/main.o: src/main.c
-	cat src/build_version.h.in | sed "s/\$$GIT_VERSION/$(GIT_VERSION)/g" > src/build_version.h
+	@cat src/build_version.h.in | sed "s/\$$GIT_VERSION/$(GIT_VERSION)/g" > src/build_version.h
+	@echo GIT_VERSION=$(GIT_VERSION)
 	$(CC) -o $@ -c $< $(CFLAGS)
 
 %.o: %.c
