@@ -1368,20 +1368,13 @@ static void print_args()
 		}
 	}
 
-	if (fallback_no_proxy)
-		logn("fallback no proxy: yes\n");
-
-	if (ipv6_prefer)
-		logn("ipv6 prefer: yes\n");
-
-	if (dns_timeout > 0)
-		logn("dns cache timeout: %d\n", dns_timeout);
-
-	if (reverse)
-		logn("reverse: yes\n");
-
-	if (resolve_on_server)
-		logn("also resolve on proxy server: yes\n");
+	logn("fallback no proxy: %s\n", fallback_no_proxy ? "yes" : "no");
+	logn("ipv6 prefer: %s\n", ipv6_prefer ? "yes" : "no");
+	logn("connection timeout: %d\n", timeout);
+	logn("dns cache timeout: %d\n", dns_timeout);
+	logn("reverse: %s\n", reverse ? "yes" : "no");
+	logn("resolve on proxy server: %s\n",
+			resolve_on_server ? "yes" : "no");
 
 #ifdef ASYN_DNS
 	a_print_servers();
