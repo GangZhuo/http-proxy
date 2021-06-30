@@ -44,6 +44,10 @@ tags
 compile_commands.json
 
 # Auto Generate
+windows/Debug/
+windows/Release/
+windows/x64/
+windows/*.user
 http-proxy
 src/build_version.h
 
